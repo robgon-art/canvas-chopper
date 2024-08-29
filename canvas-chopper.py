@@ -14,6 +14,7 @@ embeddings = None
 segment_masks = []  # List to store each individual segment mask
 scaling_factor = 1.0
 phi = 0.61803398875  # Golden ratio conjugate
+selection_points = []
 
 # Global variable to track the index of the last active segment mask
 current_index = -1
@@ -100,10 +101,9 @@ def process_image(file_path):
 
 # Function to handle mouse clicks on the image
 def on_image_click(event):
-    global embeddings, resized_image, segment_masks, scaling_factor, current_index
+    global embeddings, resized_image, segment_masks, scaling_factor, current_index, selection_points
 
     if embeddings is not None:
-
         # Calculate the clicked coordinates in the original image size
         input_point = np.array([[int(event.x * scaling_factor), int(event.y * scaling_factor)]])
         input_label = np.array([1])
@@ -137,12 +137,14 @@ def on_image_click(event):
 
         # If a new mask is created, discard any masks after the current index
         segment_masks = segment_masks[:current_index + 1]
+        selection_points = selection_points[:current_index + 1]
 
-        # Store the individual segment mask in the list
+        # Store the individual segment mask and point in the list
         segment_masks.append(mask)
+        selection_points.append((input_point[0], (event.x, event.y)))
         current_index += 1
 
-        # Overlay the mask on the image
+        # Overlay the mask and draw the points on the image
         overlay_image()
 
         # Update the segment list in the UI
@@ -150,7 +152,7 @@ def on_image_click(event):
 
 # Function to overlay the mask on the image
 def overlay_image():
-    global resized_image, segment_masks, current_index
+    global resized_image, segment_masks, current_index, selection_points
 
     # Start with a transparent overlay
     combined_overlay = Image.new("RGBA", resized_image.size, (255, 0, 0, 0))
@@ -164,6 +166,19 @@ def overlay_image():
 
     # Combine the original image with the combined overlay
     combined_image = Image.alpha_composite(resized_image.convert("RGBA"), combined_overlay)
+
+    # Draw circles and numbers for each selection point
+    draw = ImageDraw.Draw(combined_image)
+    for index, (point, screen_coord) in enumerate(selection_points[:current_index + 1]):
+        color = calculate_color(index, saturation=0.5)
+        circle_radius = 10
+        x, y = screen_coord
+        draw.ellipse((x - circle_radius, y - circle_radius, x + circle_radius, y + circle_radius), fill=color)
+        text = str(index + 1)
+        text_width, text_height = draw.textsize(text)
+        text_x = x - text_width / 2 + 1
+        text_y = y - text_height / 2 + 1
+        draw.text((text_x, text_y), text, fill="black")
 
     # Convert to Tkinter-compatible format and display it
     photo = ImageTk.PhotoImage(combined_image.convert("RGB"))
@@ -219,7 +234,7 @@ def update_segment_list():
             segment_frame.pack(fill='x', padx=2, pady=2)
             
             # Create a label with the segment number and size
-            segment_label = tk.Label(segment_frame, text=f"Segment {index + 1}: {x_size:.2f} x {y_size:.2f} inches", anchor='w', bg=color_hex, fg='black')
+            segment_label = tk.Label(segment_frame, text=f"{index + 1}: {x_size:.2f} x {y_size:.2f} inches", anchor='w', bg=color_hex, fg='black')
             segment_label.pack(fill='x', padx=5, pady=5)
 
 # Create the main window
