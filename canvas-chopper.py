@@ -6,6 +6,22 @@ import numpy as np
 from copy import deepcopy
 import threading
 import colorsys
+import os
+import urllib.request
+
+def download_file(file_url_base, file_name):
+    file_url = file_url_base + file_name
+    if not os.path.exists(file_name):
+        print(f"Downloading {file_name}...")
+        urllib.request.urlretrieve(file_url, file_name)
+        print(f"Downloaded {file_name} successfully.")
+    else:
+        print(f"{file_name} already exists. Skipping download.")
+
+# Download the encoder and decoder ONNX files
+file_url_base = "https://huggingface.co/robgonsalves/segment-anything-8bit-onnx/resolve/main/"
+download_file(file_url_base, "sam_encoder.onnx")
+download_file(file_url_base, "sam_decoder.onnx")
 
 # Global variables to store the full-sized image, embeddings, segment masks, and scaling factor
 full_size_image = None
@@ -108,6 +124,19 @@ def on_image_click(event):
         input_point = np.array([[int(event.x * scaling_factor), int(event.y * scaling_factor)]])
         input_label = np.array([1])
 
+        # Check if the point is already in any existing mask up to the current index
+        point_already_covered = False
+        for mask in segment_masks[:current_index + 1]:
+            mask_x = int(input_point[0][0] * (mask.shape[1] / full_size_image.width))
+            mask_y = int(input_point[0][1] * (mask.shape[0] / full_size_image.height))
+            if mask[mask_y, mask_x]:  # Check if the mask pixel is non-zero
+                point_already_covered = True
+                break
+
+        if point_already_covered:
+            print("Point is already part of a segment. Skipping.")
+            return
+
         onnx_coord = np.concatenate([input_point, np.array([[0.0, 0.0]])], axis=0)[None, :, :]
         onnx_label = np.concatenate([input_label, np.array([-1])])[None, :].astype(np.float32)
 
@@ -132,15 +161,22 @@ def on_image_click(event):
         })
 
         # Post-process the mask
-        mask = masks_output[0][0]
-        mask = (mask > 0).astype('uint8') * 255
+        new_mask = masks_output[0][0]
+        new_mask = (new_mask > 0).astype('uint8')
+
+        # Disable any points in the new mask that are already covered by existing masks
+        for existing_mask in segment_masks[:current_index + 1]:
+            new_mask = new_mask & (~existing_mask)
+
+        # Convert the mask to 255 scale for visibility if needed
+        new_mask = new_mask * 255
 
         # If a new mask is created, discard any masks after the current index
         segment_masks = segment_masks[:current_index + 1]
         selection_points = selection_points[:current_index + 1]
 
         # Store the individual segment mask and point in the list
-        segment_masks.append(mask)
+        segment_masks.append(new_mask)
         selection_points.append((input_point[0], (event.x, event.y)))
         current_index += 1
 
@@ -175,7 +211,7 @@ def overlay_image():
         x, y = screen_coord
         draw.ellipse((x - circle_radius, y - circle_radius, x + circle_radius, y + circle_radius), fill=color)
         text = str(index + 1)
-        text_width, text_height = draw.textsize(text)
+        text_width, text_height = draw.textbbox((0, 0), text)[2:]
         text_x = x - text_width / 2 + 1
         text_y = y - text_height / 2 + 1
         draw.text((text_x, text_y), text, fill="black")
