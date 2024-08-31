@@ -9,9 +9,37 @@ import colorsys
 import os
 import urllib.request
 import cv2
+import datetime
 
-# Additional functionalities for multi-selection of segment masks
-selected_segments = []
+def create_menus():
+    menu_bar = tk.Menu(root)
+    root.config(menu=menu_bar)
+
+    # File menu
+    file_menu = tk.Menu(menu_bar, tearoff=0)
+    menu_bar.add_cascade(label="File", menu=file_menu)
+    file_menu.add_command(label="Open Image...", accelerator="Ctrl+O", command=load_image)
+    file_menu.add_command(label="Save Segments...", accelerator="Ctrl+S", command=save_image_segments)
+    file_menu.add_separator()
+    file_menu.add_command(label="Exit", accelerator="Ctrl+Q", command=exit_application)
+
+    # Edit menu
+    edit_menu = tk.Menu(menu_bar, tearoff=0)
+    menu_bar.add_cascade(label="Edit", menu=edit_menu)
+    edit_menu.add_command(label="Undo", accelerator="Ctrl+Z", command=undo)
+    edit_menu.add_command(label="Redo", accelerator="Ctrl+R", command=redo)
+
+    # Bind keyboard shortcuts
+    root.bind("<Control-o>", lambda event: load_image())
+    root.bind("<Control-s>", lambda event: save_image_segments())
+    root.bind("<Control-q>", lambda event: exit_application())
+    root.bind("<Control-z>", lambda event: undo())
+    root.bind("<Control-r>", lambda event: redo())
+
+
+def exit_application():
+    # Function to cleanly exit the application
+    root.destroy()  # Closes the Tkinter window and ends the program
 
 # Download the ONNX model files if they don't exist
 def download_file(file_url_base, file_name):
@@ -34,7 +62,7 @@ def calculate_color(index, saturation=1.0, value=1.0):
 
 # Load the image
 def load_image():
-    global full_size_image, resized_image, embeddings, segment_masks, scaling_factor, current_index
+    global full_size_image, resized_image, embeddings, segment_masks, scaling_factor, current_index, file_path
     file_path = filedialog.askopenfilename(filetypes=[("Image files", "*.jpg;*.jpeg;*.png;*.bmp;*.gif")])
     if file_path:
         root.config(cursor="watch")
@@ -279,21 +307,76 @@ def update_segment_list():
             if index in selected_segments:
                 segment_label.config(borderwidth=2, relief="flat", highlightbackground="blue", highlightcolor="blue", highlightthickness=2)
 
+import os
+import datetime
+from tkinter import filedialog
+from PIL import Image
+
+def save_image_segments():
+    global file_path, full_size_image, segment_masks
+    if full_size_image is None or not segment_masks:
+        print("No image or segments to save.")
+        return
+
+    # Get the base name of the loaded image and prepare the default subfolder name
+    image_base_name = os.path.splitext(os.path.basename(file_path))[0]
+    now = datetime.datetime.now().strftime("%m-%d-%Y-%H-%M-%S")
+    subfolder_name = f"{image_base_name}_{now}"
+
+    # Open a dialog to choose the base directory for saving segments
+    base_dir_name = filedialog.askdirectory(title="Select Folder", initialdir=os.path.dirname(file_path))
+
+    if not base_dir_name:
+        return  # User cancelled the save operation
+
+    # Construct the full path for the new subfolder
+    full_dir_name = os.path.join(base_dir_name, subfolder_name)
+    if not os.path.exists(full_dir_name):
+        os.makedirs(full_dir_name)  # Create the subfolder if it doesn't exist
+
+    # Save each segment as an image
+    for index, mask in enumerate(segment_masks):
+        segment_image = Image.new("RGBA", full_size_image.size)
+        pixels = segment_image.load()
+        for y in range(mask.shape[0]):
+            for x in range(mask.shape[1]):
+                if mask[y, x]:
+                    r, g, b = full_size_image.getpixel((x, y))
+                    pixels[x, y] = (r, g, b, int(mask[y, x] * 255))
+
+        segment_file_path = os.path.join(full_dir_name, f"segment_{index + 1:02}.png")
+        segment_image.save(segment_file_path)
+
+    print("Segments saved successfully.")
+
+def update_cursor(event):
+    if event.state & 0x001:  # Shift is pressed
+        image_label.config(cursor="cross_reverse")
+    elif event.state & 0x200:  # Alt is pressed
+        image_label.config(cursor="crosshair")
+    else:
+        image_label.config(cursor="cross")
+
+def reset_cursor(event):
+    image_label.config(cursor="cross")
+
 # Initialize global variables
 full_size_image = None
 resized_image = None
 embeddings = None
+file_path = None
 segment_masks = []
+selection_points = []
+selected_segments = []
 scaling_factor = 1.0
 phi = 0.61803398875
-selection_points = []
 current_index = -1
 default_dpi = 60
 
 # Main GUI
 root = tk.Tk()
 root.title("CanvasChopper")
-root.geometry("740x567")
+root.geometry("740x577")
 root.bind("<Control-z>", undo)
 root.bind("<Control-y>", redo)
 
@@ -302,7 +385,7 @@ icon_image = tk.PhotoImage(file="canvas-chopper.png")
 root.iconphoto(False, icon_image)
 
 # Define the load button
-load_button = tk.Button(root, text="Load Image", command=load_image, bg="#555555", fg="white")
+load_button = tk.Button(root, text="Open Image", command=load_image, bg="#555555", fg="white")
 load_button.pack(side='left', padx=5, pady=5, anchor='nw')
 
 # Define instruction label
@@ -328,7 +411,17 @@ image_frame.place(x=5, y=40, anchor='nw')
 image_frame.pack_propagate(0)
 image_label = tk.Label(image_frame, cursor="cross", background='black')
 image_label.pack()
+
+# Binding key press and key release events to the image label
 image_label.bind("<Button-1>", on_image_click)
+image_label.bind("<Enter>", lambda event: update_cursor(event))
+image_label.bind("<Motion>", lambda event: update_cursor(event))
+image_label.bind("<Leave>", lambda event: reset_cursor(event))
+image_label.bind("<KeyPress>", lambda event: update_cursor(event))
+image_label.bind("<KeyRelease>", lambda event: update_cursor(event))
+
+# Ensure root window gets focus to capture key events
+root.focus_set()
 
 # Define the segment list
 segment_list_canvas = tk.Canvas(root)
@@ -339,6 +432,9 @@ segment_list_scrollbar.place(x=735, y=40, anchor='ne', height=512)
 segment_list_canvas.configure(yscrollcommand=segment_list_scrollbar.set)
 segment_list_canvas.create_window((0, 0), window=segment_list_frame, anchor='nw')
 segment_list_frame.bind("<Configure>", lambda e: segment_list_canvas.configure(scrollregion=segment_list_canvas.bbox("all")))
+
+# Create the menus
+create_menus()
 
 # Run the main loop
 root.mainloop()
