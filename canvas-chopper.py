@@ -8,6 +8,7 @@ import threading
 import colorsys
 import os
 import urllib.request
+import cv2
 
 # Additional functionalities for multi-selection of segment masks
 selected_segments = []
@@ -81,6 +82,35 @@ def process_image(file_path):
     root.config(cursor="arrow")
     clear_segment_list()
 
+def post_process_mask(mask, input_point):
+    # Ensure mask is in uint8 format for OpenCV, scaling values to 0-255
+    mask_cv = (mask * 255).astype(np.uint8)
+    h, w = mask_cv.shape
+
+    # Check if the input_point is within the bounds of the image
+    x, y = int(input_point[0][0]), int(input_point[0][1])
+    if x >= w or y >= h:
+        return mask.astype(np.uint8)  # Ensure we return uint8 mask if point is out of bounds
+
+    # Create an empty image for floodFill output and a mask to constrain floodFill area
+    flood_mask = np.zeros((h + 2, w + 2), dtype=np.uint8)
+
+    # Use floodFill to identify the connected component from the seed point
+    cv2.floodFill(mask_cv, flood_mask, (x, y), 255, flags=8 | cv2.FLOODFILL_MASK_ONLY)
+    connected_component = flood_mask[1:-1, 1:-1]  # Extract the filled area, removing the border added by floodFill
+
+    # Fill any holes within the connected blob
+    contours, _ = cv2.findContours(connected_component, cv2.RETR_CCOMP, cv2.CHAIN_APPROX_SIMPLE)
+    for cnt in contours:
+        cv2.drawContours(connected_component, [cnt], -1, 255, -1)
+
+    # Ensuring that the result matches the original image size
+    processed_mask = np.zeros_like(mask_cv)
+    processed_mask[:h, :w] = (connected_component > 0).astype(np.uint8)
+
+    # Ensure the returned mask is in uint8 format, suitable for use as a PIL image mask
+    return processed_mask
+
 # Handle image click events
 def on_image_click(event):
     global embeddings, resized_image, segment_masks, scaling_factor, current_index, selection_points, selected_segments
@@ -132,6 +162,9 @@ def on_image_click(event):
         # Modify the new mask based on existing masks
         for existing_mask in segment_masks[:current_index + 1]:
             new_mask = new_mask & (~existing_mask)
+
+        # Post-process the mask
+        new_mask = post_process_mask(new_mask, input_point)
 
         # Multiply the mask by 255 and add to the segment masks
         new_mask = new_mask * 255
