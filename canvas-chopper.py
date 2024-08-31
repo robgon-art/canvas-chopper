@@ -11,35 +11,64 @@ import urllib.request
 import cv2
 import datetime
 
-def create_menus():
-    menu_bar = tk.Menu(root)
-    root.config(menu=menu_bar)
+from PIL import Image  # Ensure PIL is imported if not already
 
-    # File menu
-    file_menu = tk.Menu(menu_bar, tearoff=0)
-    menu_bar.add_cascade(label="File", menu=file_menu)
-    file_menu.add_command(label="Open Image...", accelerator="Ctrl+O", command=load_image)
-    file_menu.add_command(label="Save Segments...", accelerator="Ctrl+S", command=save_image_segments)
-    file_menu.add_separator()
-    file_menu.add_command(label="Exit", accelerator="Ctrl+Q", command=exit_application)
+def join_selected_segments():
+    global segment_masks, selection_points, selected_segments, current_index
 
-    # Edit menu
-    edit_menu = tk.Menu(menu_bar, tearoff=0)
-    menu_bar.add_cascade(label="Edit", menu=edit_menu)
-    edit_menu.add_command(label="Undo", accelerator="Ctrl+Z", command=undo)
-    edit_menu.add_command(label="Redo", accelerator="Ctrl+R", command=redo)
+    if len(selected_segments) < 2:
+        # print("Select at least two segments to join.")
+        return
+    
+    # print(f"Before joining segments: {selected_segments}")
+    # for i, mask in enumerate(segment_masks):
+    #     area = np.sum(mask)
+    #     print(f"  Segment {i}: {area} pixels")
+    #     # Save each selected segment as a PNG file
+    #     Image.fromarray(mask.astype(np.uint8)).save(f'segment_{i + 1}.png')
 
-    # Bind keyboard shortcuts
-    root.bind("<Control-o>", lambda event: load_image())
-    root.bind("<Control-s>", lambda event: save_image_segments())
-    root.bind("<Control-q>", lambda event: exit_application())
-    root.bind("<Control-z>", lambda event: undo())
-    root.bind("<Control-r>", lambda event: redo())
+    push_state()
 
+    min_index = min(selected_segments)
+    combined_mask = np.zeros_like(segment_masks[min_index], dtype=np.uint8)  # Ensure mask is initialized correctly
 
-def exit_application():
-    # Function to cleanly exit the application
-    root.destroy()  # Closes the Tkinter window and ends the program
+    for idx in selected_segments:
+        combined_mask = np.maximum(combined_mask, segment_masks[idx])
+
+    combined_mask = post_process_mask(combined_mask, selection_points[min_index][0][0], selection_points[min_index][0][1])
+
+    print(f"Combined area before post-process: {np.sum(combined_mask)} pixels")
+
+    # Save the combined mask before post-processing
+    # Image.fromarray(combined_mask.astype(np.uint8)).save('joined.png')
+
+    new_segment_masks = [mask for i, mask in enumerate(segment_masks) if i not in selected_segments or i == min_index]
+    new_segment_points = [point for i, point in enumerate(selection_points) if i not in selected_segments or i == min_index]
+
+    # Replace the segment_masks with updated list before post-processing
+    segment_masks = new_segment_masks
+    selection_points = new_segment_points
+
+    # Apply post-process to the combined mask
+    input_point = np.array(selection_points[min_index][0], ndmin=2)
+    new_mask = post_process_mask(combined_mask, input_point[0][0], input_point[0][1])
+    segment_masks[min_index] = new_mask
+
+    # Save the post-processed combined mask
+    # Image.fromarray(new_mask).save('joined_post_processed.png')
+
+    selected_segments = [min_index]
+    current_index = len(segment_masks) - 1
+
+    overlay_image()
+    update_segment_list()
+
+    # print("After joining:")
+    # for i, mask in enumerate(segment_masks):
+    #     area = np.sum(mask)
+    #     print(f"  Segment {i}: {area} pixels")
+
+    # print(f"Segment {min_index} joined successfully.")
 
 # Download the ONNX model files if they don't exist
 def download_file(file_url_base, file_name):
@@ -48,8 +77,8 @@ def download_file(file_url_base, file_name):
         print(f"Downloading {file_name}...")
         urllib.request.urlretrieve(file_url, file_name)
         print(f"Downloaded {file_name} successfully.")
-    else:
-        print(f"{file_name} already exists. Skipping download.")
+    # else:
+    #     print(f"{file_name} already exists. Skipping download.")
 file_url_base = "https://huggingface.co/robgonsalves/segment-anything-8bit-onnx/resolve/main/"
 download_file(file_url_base, "sam_encoder.onnx")
 download_file(file_url_base, "sam_decoder.onnx")
@@ -110,34 +139,36 @@ def process_image(file_path):
     root.config(cursor="arrow")
     clear_segment_list()
 
-def post_process_mask(mask, input_point):
-    # Ensure mask is in uint8 format for OpenCV, scaling values to 0-255
-    mask_cv = (mask * 255).astype(np.uint8)
+def post_process_mask(mask, input_x, input_y):
+    # Assuming mask is received with values 0 or 255
+    mask_cv = mask.astype(np.uint8)
     h, w = mask_cv.shape
 
     # Check if the input_point is within the bounds of the image
-    x, y = int(input_point[0][0]), int(input_point[0][1])
-    if x >= w or y >= h:
-        return mask.astype(np.uint8)  # Ensure we return uint8 mask if point is out of bounds
+    x, y = int(input_x), int(input_y)
+    if x >= w or y >= h or x < 0 or y < 0:
+        return mask_cv  # Return the mask directly if point is out of bounds
+    
+    # write out mask_cv as a PNG file
+    # Image.fromarray(mask_cv).save('mask_cv.png')
 
-    # Create an empty image for floodFill output and a mask to constrain floodFill area
+    # Initialize floodFill parameters and mask
     flood_mask = np.zeros((h + 2, w + 2), dtype=np.uint8)
+    cv2.floodFill(mask_cv, flood_mask, (x, y), 255, flags=cv2.FLOODFILL_MASK_ONLY)
+    connected_component = flood_mask[1:-1, 1:-1]
 
-    # Use floodFill to identify the connected component from the seed point
-    cv2.floodFill(mask_cv, flood_mask, (x, y), 255, flags=8 | cv2.FLOODFILL_MASK_ONLY)
-    connected_component = flood_mask[1:-1, 1:-1]  # Extract the filled area, removing the border added by floodFill
+    # Convert values from 1 to 255 where the connected component is
+    connected_component = connected_component * 255
 
-    # Fill any holes within the connected blob
+    # write out connected_component as a PNG file
+    # Image.fromarray(connected_component).save('connected_component.png')
+
+    # Process to fill holes within the connected component
     contours, _ = cv2.findContours(connected_component, cv2.RETR_CCOMP, cv2.CHAIN_APPROX_SIMPLE)
     for cnt in contours:
         cv2.drawContours(connected_component, [cnt], -1, 255, -1)
 
-    # Ensuring that the result matches the original image size
-    processed_mask = np.zeros_like(mask_cv)
-    processed_mask[:h, :w] = (connected_component > 0).astype(np.uint8)
-
-    # Ensure the returned mask is in uint8 format, suitable for use as a PIL image mask
-    return processed_mask
+    return connected_component  # Return mask in the same format as input
 
 def generate_segment(input_point, event):
     global embeddings, resized_image, segment_masks, scaling_factor, current_index, selection_points, selected_segments
@@ -166,29 +197,17 @@ def generate_segment(input_point, event):
             "orig_im_size": np.array([full_size_image.height, full_size_image.width], dtype=np.float32)
         })
 
-        # Get the new mask and set to uint8
         new_mask = masks_output[0][0]
-        new_mask = (new_mask > 0).astype('uint8')
+        new_mask = (new_mask > 0).astype('uint8') * 255  # Scale binary mask to 0 or 255
 
-        # Modify the new mask based on existing masks to avoid overlapping
+        # Ensure new_mask is correctly processed against existing masks
         for existing_mask in segment_masks[:current_index + 1]:
-            new_mask = new_mask & (~existing_mask)
+            new_mask = new_mask & (~existing_mask)  # Ensures that the new mask is not overlapping
 
-        # Post-process the mask
-        new_mask = post_process_mask(new_mask, input_point)
-
-        # Multiply the mask by 255 and add to the segment masks
-        new_mask = new_mask * 255
-        segment_masks = segment_masks[:current_index + 1]
-        selection_points = selection_points[:current_index + 1]
+        new_mask = post_process_mask(new_mask, input_point[0][0], input_point[0][1])
         segment_masks.append(new_mask)
         selection_points.append((input_point[0], (event.x, event.y)))
         current_index += 1
-
-        # Update visuals and selection logic
-        handle_selection_logic(event, current_index)
-        overlay_image()
-        update_segment_list()
 
 def find_segment_at_point(input_point):
     global segment_masks, full_size_image
@@ -211,32 +230,40 @@ def find_segment_at_point(input_point):
 
 # Handle image click events
 def on_image_click(event):
-    # Check if the image is loaded
+    global selected_segments, shift_down, alt_down
+
+    # Check if the image is loaded and process the click
     if embeddings is not None:
         input_point = np.array([[int(event.x * scaling_factor), int(event.y * scaling_factor)]])
-        
         existing_segment_index = find_segment_at_point(input_point)
-        
+
+        # Process based on whether a segment was clicked or not
         if existing_segment_index != -1:
-            handle_selection_logic(event, existing_segment_index)
+            # Handle modifier keys when clicking on an existing segment
+            if shift_down:
+                if existing_segment_index not in selected_segments:
+                    selected_segments.append(existing_segment_index)
+            elif alt_down:
+                if existing_segment_index in selected_segments:
+                    selected_segments.remove(existing_segment_index)
+            else:
+                selected_segments = [existing_segment_index]
         else:
+            # No existing segment clicked, so possibly create a new segment
             push_state()  # Save current state before modifying
             generate_segment(input_point, event)
+            new_index = current_index  # The current_index should now be the index of the new segment
+            
+            # Handle selection of the new segment depending on Shift
+            if shift_down:
+                selected_segments.append(new_index)
+            else:
+                selected_segments = [new_index]
 
+        # Update visuals
+        overlay_image()
+        update_segment_list()
 
-# Handle selection logic
-def handle_selection_logic(event, new_index):
-    global selected_segments, shift_down, alt_down
-    # SHIFT = 1  # Usually, Shift is represented by the first bit
-    # ALT = 512  # Alt is typically represented by the ninth bit
-    if shift_down:  # Check if Shift is pressed
-        if new_index not in selected_segments:
-            selected_segments.append(new_index)
-    elif alt_down:  # Check if Alt is pressed
-        if new_index in selected_segments:
-            selected_segments.remove(new_index)
-    else:
-        selected_segments = [new_index]
 
 # Add overlay to the image
 def overlay_image():
@@ -338,15 +365,10 @@ def update_segment_list():
             if index in selected_segments:
                 segment_label.config(borderwidth=2, relief="flat", highlightbackground="blue", highlightcolor="blue", highlightthickness=2)
 
-import os
-import datetime
-from tkinter import filedialog
-from PIL import Image
-
 def save_image_segments():
     global file_path, full_size_image, segment_masks
     if full_size_image is None or not segment_masks:
-        print("No image or segments to save.")
+        # print("No image or segments to save.")
         return
 
     # Get the base name of the loaded image and prepare the default subfolder name
@@ -378,7 +400,7 @@ def save_image_segments():
         segment_file_path = os.path.join(full_dir_name, f"segment_{index + 1:02}.png")
         segment_image.save(segment_file_path)
 
-    print("Segments saved successfully.")
+    # print("Segments saved successfully.")
 
 # Track alt key press and release
 def alt_on(event):
@@ -427,6 +449,37 @@ def pop_state():
     if state_stack:
         return state_stack.pop()
     return None
+
+def exit_application():
+    # Function to cleanly exit the application
+    root.destroy()  # Closes the Tkinter window and ends the program
+
+def create_menus():
+    menu_bar = tk.Menu(root)
+    root.config(menu=menu_bar)
+
+    # File menu
+    file_menu = tk.Menu(menu_bar, tearoff=0)
+    menu_bar.add_cascade(label="File", menu=file_menu)
+    file_menu.add_command(label="Open Image...", accelerator="Ctrl+O", command=load_image)
+    file_menu.add_command(label="Save Segments...", accelerator="Ctrl+S", command=save_image_segments)
+    file_menu.add_separator()
+    file_menu.add_command(label="Exit", accelerator="Ctrl+Q", command=exit_application)
+
+    # Edit menu
+    edit_menu = tk.Menu(menu_bar, tearoff=0)
+    menu_bar.add_cascade(label="Edit", menu=edit_menu)
+    edit_menu.add_command(label="Undo", accelerator="Ctrl+Z", command=undo)
+    edit_menu.add_command(label="Redo", accelerator="Ctrl+R", command=redo)
+    edit_menu.add_command(label="Join Segments", accelerator="Ctrl+J", command=join_selected_segments)
+
+    # Bind keyboard shortcuts
+    root.bind("<Control-o>", lambda event: load_image())
+    root.bind("<Control-s>", lambda event: save_image_segments())
+    root.bind("<Control-q>", lambda event: exit_application())
+    root.bind("<Control-z>", lambda event: undo())
+    root.bind("<Control-r>", lambda event: redo())
+    root.bind("<Control-j>", lambda event: join_selected_segments())
 
 # Initialize global variables
 full_size_image = None
