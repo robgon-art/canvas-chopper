@@ -209,13 +209,13 @@ def on_image_click(event):
 
 # Handle selection logic
 def handle_selection_logic(event, new_index):
-    global selected_segments
-    SHIFT = 1  # Usually, Shift is represented by the first bit
-    ALT = 512  # Alt is typically represented by the ninth bit
-    if event.state & SHIFT:  # Check if Shift is pressed
+    global selected_segments, shift_down, alt_down
+    # SHIFT = 1  # Usually, Shift is represented by the first bit
+    # ALT = 512  # Alt is typically represented by the ninth bit
+    if shift_down:  # Check if Shift is pressed
         if new_index not in selected_segments:
             selected_segments.append(new_index)
-    elif event.state & ALT:  # Check if Alt is pressed
+    elif alt_down:  # Check if Alt is pressed
         if new_index in selected_segments:
             selected_segments.remove(new_index)
     else:
@@ -349,16 +349,35 @@ def save_image_segments():
 
     print("Segments saved successfully.")
 
-def update_cursor(event):
-    if event.state & 0x001:  # Shift is pressed
-        image_label.config(cursor="cross_reverse")
-    elif event.state & 0x200:  # Alt is pressed
-        image_label.config(cursor="crosshair")
-    else:
-        image_label.config(cursor="cross")
+# Track alt key press and release
+def alt_on(event):
+    global alt_down
+    if not alt_down:
+        print("ALT ON")
+        image_label.config(cursor="X_cursor")
+    alt_down = True
 
-def reset_cursor(event):
-    image_label.config(cursor="cross")
+def alt_off(event):
+    global alt_down
+    if alt_down:
+        print("ALT OFF")
+        image_label.config(cursor="cross")
+    alt_down = False
+
+# track shift key press and release
+def shift_on(event):
+    global shift_down
+    if not shift_down:
+        print("SHIFT ON")
+        image_label.config(cursor="cross_reverse")
+    shift_down = True
+
+def shift_off(event):
+    global shift_down
+    if shift_down:
+        print("SHIFT OFF")
+        image_label.config(cursor="cross")
+    shift_down = False
 
 # Initialize global variables
 full_size_image = None
@@ -372,6 +391,8 @@ scaling_factor = 1.0
 phi = 0.61803398875
 current_index = -1
 default_dpi = 60
+alt_down = False
+shift_down = False
 
 # Main GUI
 root = tk.Tk()
@@ -411,17 +432,7 @@ image_frame.place(x=5, y=40, anchor='nw')
 image_frame.pack_propagate(0)
 image_label = tk.Label(image_frame, cursor="cross", background='black')
 image_label.pack()
-
-# Binding key press and key release events to the image label
 image_label.bind("<Button-1>", on_image_click)
-image_label.bind("<Enter>", lambda event: update_cursor(event))
-image_label.bind("<Motion>", lambda event: update_cursor(event))
-image_label.bind("<Leave>", lambda event: reset_cursor(event))
-image_label.bind("<KeyPress>", lambda event: update_cursor(event))
-image_label.bind("<KeyRelease>", lambda event: update_cursor(event))
-
-# Ensure root window gets focus to capture key events
-root.focus_set()
 
 # Define the segment list
 segment_list_canvas = tk.Canvas(root)
@@ -432,6 +443,12 @@ segment_list_scrollbar.place(x=735, y=40, anchor='ne', height=512)
 segment_list_canvas.configure(yscrollcommand=segment_list_scrollbar.set)
 segment_list_canvas.create_window((0, 0), window=segment_list_frame, anchor='nw')
 segment_list_frame.bind("<Configure>", lambda e: segment_list_canvas.configure(scrollregion=segment_list_canvas.bbox("all")))
+
+# Bind the Alt and Shift keys
+root.bind("<Alt_L>", alt_on)
+root.bind("<KeyRelease-Alt_L>", alt_off)
+root.bind("<Shift_L>", shift_on)
+root.bind("<KeyRelease-Shift_L>", shift_off)
 
 # Create the menus
 create_menus()
