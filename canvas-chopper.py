@@ -13,6 +13,35 @@ import datetime
 
 from PIL import Image  # Ensure PIL is imported if not already
 
+def select_all_segments():
+    global selected_segments, segment_masks
+    selected_segments = list(range(len(segment_masks)))
+    overlay_image()
+    update_segment_list()
+
+def select_no_segments():
+    global selected_segments
+    selected_segments = []
+    overlay_image()
+    update_segment_list()
+
+def delete_selected_segment():
+    global segment_masks, selection_points, selected_segments, current_index
+    if selected_segments:
+        push_state()  # Add current state to the stack for undo functionality
+        
+        # Delete selected segments in reverse order to avoid indexing issues
+        for index in sorted(selected_segments, reverse=True):
+            del segment_masks[index]
+            del selection_points[index]
+        
+        selected_segments = []
+        
+        # Update current_index after deletion
+        current_index = len(segment_masks) - 1
+        overlay_image()
+        update_segment_list()
+
 def join_selected_segments():
     global segment_masks, selection_points, selected_segments, current_index
 
@@ -298,7 +327,7 @@ def overlay_image():
     image_label.image = photo
 
 # Undo function, Ctrl+Z
-def undo():
+def undo(event=None):
     global segment_masks, selection_points, selected_segments, current_index
     if state_stack:
         redo_stack.append({
@@ -316,7 +345,7 @@ def undo():
         update_segment_list()
 
 # Redo function, Ctrl+Y
-def redo():
+def redo(event=None):
     global segment_masks, selection_points, selected_segments, current_index
     if redo_stack:
         push_state()
@@ -472,14 +501,20 @@ def create_menus():
     edit_menu.add_command(label="Undo", accelerator="Ctrl+Z", command=undo)
     edit_menu.add_command(label="Redo", accelerator="Ctrl+R", command=redo)
     edit_menu.add_command(label="Join Segments", accelerator="Ctrl+J", command=join_selected_segments)
+    edit_menu.add_command(label="Select All", accelerator="Ctrl+A", command=select_all_segments)
+    edit_menu.add_command(label="Select None", accelerator="Ctrl+N", command=select_no_segments)
+    edit_menu.add_command(label="Delete Segment", accelerator="Ctrl+X", command=delete_selected_segment)
 
-    # Bind keyboard shortcuts
     root.bind("<Control-o>", lambda event: load_image())
     root.bind("<Control-s>", lambda event: save_image_segments())
     root.bind("<Control-q>", lambda event: exit_application())
     root.bind("<Control-z>", lambda event: undo())
     root.bind("<Control-r>", lambda event: redo())
     root.bind("<Control-j>", lambda event: join_selected_segments())
+    root.bind("<Control-a>", lambda event: select_all_segments())
+    root.bind("<Control-n>", lambda event: select_no_segments())
+    root.bind("<Control-x>", lambda event: delete_selected_segment())
+    root.bind("<Delete>", lambda event: delete_selected_segment())
 
 # Initialize global variables
 full_size_image = None
