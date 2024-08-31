@@ -139,32 +139,13 @@ def post_process_mask(mask, input_point):
     # Ensure the returned mask is in uint8 format, suitable for use as a PIL image mask
     return processed_mask
 
-# Handle image click events
-def on_image_click(event):
+def generate_segment(input_point, event):
     global embeddings, resized_image, segment_masks, scaling_factor, current_index, selection_points, selected_segments
 
     # Check if the image is loaded
     if embeddings is not None:
-        input_point = np.array([[int(event.x * scaling_factor), int(event.y * scaling_factor)]])
+        # Prepare input for the ONNX model
         input_label = np.array([1])
-        existing_segment_index = -1
-
-        # Check if the point is inside an existing segment
-        for index, mask in enumerate(segment_masks[:current_index + 1]):
-            mask_x = int(input_point[0][0] * (mask.shape[1] / full_size_image.width))
-            mask_y = int(input_point[0][1] * (mask.shape[0] / full_size_image.height))
-            if mask[mask_y, mask_x]:
-                existing_segment_index = index
-                break
-
-        # If the point is inside an existing segment, handle selection logic
-        if existing_segment_index != -1:
-            handle_selection_logic(event, existing_segment_index)
-            overlay_image()
-            update_segment_list()
-            return
-
-        # Run the decoder to generate the new mask
         onnx_coord = np.concatenate([input_point, np.array([[0.0, 0.0]])], axis=0)[None, :, :]
         onnx_label = np.concatenate([input_label, np.array([-1])])[None, :].astype(np.float32)
         coords = deepcopy(onnx_coord).astype(float)
@@ -173,6 +154,8 @@ def on_image_click(event):
         onnx_coord = coords.astype("float32")
         onnx_mask_input = np.zeros((1, 1, 256, 256), dtype=np.float32)
         onnx_has_mask_input = np.zeros(1, dtype=np.float32)
+
+        # Run the decoder to generate the new mask
         decoder = ort.InferenceSession("sam_decoder.onnx")
         masks_output, _, _ = decoder.run(None, {
             "image_embeddings": embeddings,
@@ -187,7 +170,7 @@ def on_image_click(event):
         new_mask = masks_output[0][0]
         new_mask = (new_mask > 0).astype('uint8')
 
-        # Modify the new mask based on existing masks
+        # Modify the new mask based on existing masks to avoid overlapping
         for existing_mask in segment_masks[:current_index + 1]:
             new_mask = new_mask & (~existing_mask)
 
@@ -202,10 +185,44 @@ def on_image_click(event):
         selection_points.append((input_point[0], (event.x, event.y)))
         current_index += 1
 
-        # Handle selection logic, overlay image, and update segment list
+        # Update visuals and selection logic
         handle_selection_logic(event, current_index)
         overlay_image()
         update_segment_list()
+
+def find_segment_at_point(input_point):
+    global segment_masks, full_size_image
+
+    # Scale input point coordinates to match the original image dimensions
+    x, y = input_point[0][0], input_point[0][1]
+
+    # Iterate through all segment masks
+    for index, mask in enumerate(segment_masks):
+        mask_height, mask_width = mask.shape
+        # Scale coordinates to mask size
+        mask_x = int(x * (mask_width / full_size_image.width))
+        mask_y = int(y * (mask_height / full_size_image.height))
+        
+        # Check if the scaled point is within the mask
+        if mask_y < mask_height and mask_x < mask_width and mask[mask_y, mask_x]:
+            return index  # Return the index of the segment if the point is inside
+
+    return -1  # Return -1 if the point is not inside any segment
+
+# Handle image click events
+def on_image_click(event):
+    # Check if the image is loaded
+    if embeddings is not None:
+        input_point = np.array([[int(event.x * scaling_factor), int(event.y * scaling_factor)]])
+        
+        existing_segment_index = find_segment_at_point(input_point)
+        
+        if existing_segment_index != -1:
+            handle_selection_logic(event, existing_segment_index)
+        else:
+            push_state()  # Save current state before modifying
+            generate_segment(input_point, event)
+
 
 # Handle selection logic
 def handle_selection_logic(event, new_index):
@@ -254,22 +271,36 @@ def overlay_image():
     image_label.image = photo
 
 # Undo function, Ctrl+Z
-def undo(event=None):
-    global current_index
-    if current_index >= 0:
-        current_index -= 1
-        selected_segments = [max(0, current_index)]
+def undo():
+    global segment_masks, selection_points, selected_segments, current_index
+    if state_stack:
+        redo_stack.append({
+            "segment_masks": deepcopy(segment_masks),
+            "selection_points": deepcopy(selection_points),
+            "selected_segments": deepcopy(selected_segments),
+            "current_index": current_index
+        })
+        last_state = pop_state()
+        segment_masks = last_state["segment_masks"]
+        selection_points = last_state["selection_points"]
+        selected_segments = last_state["selected_segments"]
+        current_index = last_state["current_index"]
         overlay_image()
         update_segment_list()
 
 # Redo function, Ctrl+Y
-def redo(event=None):
-    global current_index
-    if current_index < len(segment_masks) - 1:
-        current_index += 1
-        selected_segments = [current_index]
+def redo():
+    global segment_masks, selection_points, selected_segments, current_index
+    if redo_stack:
+        push_state()
+        state_to_restore = redo_stack.pop()
+        segment_masks = state_to_restore["segment_masks"]
+        selection_points = state_to_restore["selection_points"]
+        selected_segments = state_to_restore["selected_segments"]
+        current_index = state_to_restore["current_index"]
         overlay_image()
         update_segment_list()
+
 
 # Update the image size display
 def update_image_size_display(*args):
@@ -353,14 +384,14 @@ def save_image_segments():
 def alt_on(event):
     global alt_down
     if not alt_down:
-        print("ALT ON")
+        # print("ALT ON")
         image_label.config(cursor="X_cursor")
     alt_down = True
 
 def alt_off(event):
     global alt_down
     if alt_down:
-        print("ALT OFF")
+        # print("ALT OFF")
         image_label.config(cursor="cross")
     alt_down = False
 
@@ -368,16 +399,34 @@ def alt_off(event):
 def shift_on(event):
     global shift_down
     if not shift_down:
-        print("SHIFT ON")
+        # print("SHIFT ON")
         image_label.config(cursor="cross_reverse")
     shift_down = True
 
 def shift_off(event):
     global shift_down
     if shift_down:
-        print("SHIFT OFF")
+        # print("SHIFT OFF")
         image_label.config(cursor="cross")
     shift_down = False
+
+# Functions to manage the state stack for undo and redo
+def push_state():
+    global state_stack
+    # Create a deep copy of the current state and push it onto the stack
+    current_state = {
+        "segment_masks": deepcopy(segment_masks),
+        "selection_points": deepcopy(selection_points),
+        "selected_segments": deepcopy(selected_segments),
+        "current_index": current_index
+    }
+    state_stack.append(current_state)
+
+def pop_state():
+    # Pop the last state from the stack if possible and apply it
+    if state_stack:
+        return state_stack.pop()
+    return None
 
 # Initialize global variables
 full_size_image = None
@@ -393,6 +442,8 @@ current_index = -1
 default_dpi = 60
 alt_down = False
 shift_down = False
+state_stack = []
+redo_stack = []
 
 # Main GUI
 root = tk.Tk()
