@@ -168,12 +168,12 @@ def process_image(file_path):
     root.config(cursor="arrow")
     clear_segment_list()
 
-def post_process_mask(mask, input_x, input_y):
-    # Assuming mask is received with values 0 or 255
-    mask_cv = mask.astype(np.uint8)
 
-    # Apply a median blur
-    mask_cv = cv2.medianBlur(mask_cv, 15)
+# Post-process the mask to select the primary component, fill holes, remove noise, etc.
+def post_process_mask(mask, input_x, input_y, apply_median=True):
+    mask_cv = mask.astype(np.uint8)
+    if apply_median:
+        mask_cv = cv2.medianBlur(mask_cv, 15)
 
     h, w = mask_cv.shape
 
@@ -203,6 +203,27 @@ def post_process_mask(mask, input_x, input_y):
 
     return connected_component  # Return mask in the same format as input
 
+def morphological_filter(amount):
+    global segment_masks, selected_segments
+    push_state()  # Save the current state before making any changes
+
+    kernel = np.ones((3, 3), np.uint8)
+    operation = cv2.dilate if amount > 0 else cv2.erode
+    amount = abs(amount)
+
+    # Apply the morphological operation to the selected segments
+    selected_masks = {index: operation(segment_masks[index], kernel, iterations=amount)
+        for index in selected_segments}
+
+    # Update the global segment_masks with the new non-overlapping selected masks
+    for index, mask in selected_masks.items():
+        for i, existing_mask in enumerate(segment_masks):
+            if i != index:
+                mask = mask & (~existing_mask)
+        segment_masks[index] = mask
+
+    overlay_image()
+    update_segment_list()
 
 def generate_segment(input_point, event):
     global embeddings, resized_image, segment_masks, scaling_factor, current_index, selection_points, selected_segments
@@ -234,14 +255,19 @@ def generate_segment(input_point, event):
         new_mask = masks_output[0][0]
         new_mask = (new_mask > 0).astype('uint8') * 255  # Scale binary mask to 0 or 255
 
-        # Ensure new_mask is correctly processed against existing masks
-        for existing_mask in segment_masks[:current_index + 1]:
-            new_mask = new_mask & (~existing_mask)  # Ensures that the new mask is not overlapping
-
+        # Ensure new_mask is correctly processed against existing masks before and after post-processing
+        new_mask = remove_overlaps(new_mask)
         new_mask = post_process_mask(new_mask, input_point[0][0], input_point[0][1])
+        new_mask = remove_overlaps(new_mask)
+
         segment_masks.append(new_mask)
         selection_points.append((input_point[0], (event.x, event.y)))
         current_index += 1
+
+def remove_overlaps(new_mask):
+    for existing_mask in segment_masks:
+        new_mask = new_mask & (~existing_mask)
+    return new_mask
 
 def find_segment_at_point(input_point):
     global segment_masks, full_size_image
@@ -297,7 +323,6 @@ def on_image_click(event):
         # Update visuals
         overlay_image()
         update_segment_list()
-
 
 # Add overlay to the image
 def overlay_image():
@@ -362,7 +387,6 @@ def redo(event=None):
         overlay_image()
         update_segment_list()
 
-
 # Update the image size display
 def update_image_size_display(*args):
     if full_size_image is not None:
@@ -415,7 +439,6 @@ def update_segment_list():
             segment_label.bind("<Button-1>", lambda event, idx=index: on_segment_label_click(event, idx))
             if index in selected_segments:
                 segment_label.config(borderwidth=2, relief="flat", highlightbackground="blue", highlightcolor="blue", highlightthickness=2)
-
 
 def save_image_segments():
     global file_path, full_size_image, segment_masks
@@ -529,17 +552,22 @@ def create_menus():
     edit_menu.add_separator()
     edit_menu.add_command(label="Join Segments", accelerator="Ctrl+J", command=join_selected_segments)
     edit_menu.add_command(label="Delete Segment", accelerator="Ctrl+X", command=delete_selected_segment)
+    edit_menu.add_separator()
+    edit_menu.add_command(label="Grow Segments", accelerator="+", command=lambda: morphological_filter(1))
+    edit_menu.add_command(label="Shrink Segments", accelerator="-", command=lambda: morphological_filter(-1))
 
     root.bind("<Control-o>", lambda event: load_image())
     root.bind("<Control-s>", lambda event: save_image_segments())
     root.bind("<Control-q>", lambda event: exit_application())
     root.bind("<Control-z>", lambda event: undo())
     root.bind("<Control-r>", lambda event: redo())
-    root.bind("<Control-j>", lambda event: join_selected_segments())
     root.bind("<Control-a>", lambda event: select_all_segments())
     root.bind("<Control-n>", lambda event: select_no_segments())
+    root.bind("<Control-j>", lambda event: join_selected_segments())
     root.bind("<Control-x>", lambda event: delete_selected_segment())
     root.bind("<Delete>", lambda event: delete_selected_segment())
+    root.bind("+", lambda event: morphological_filter(1))
+    root.bind("-", lambda event: morphological_filter(-1))
 
 # Initialize global variables
 full_size_image = None
