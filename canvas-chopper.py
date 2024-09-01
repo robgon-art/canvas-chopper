@@ -220,6 +220,8 @@ def morphological_filter(amount):
         for i, existing_mask in enumerate(segment_masks):
             if i != index:
                 mask = mask & (~existing_mask)
+        # Apply post-processing to the mask before updating the global segment_masks
+        mask = post_process_mask(mask, selection_points[index][0][0], selection_points[index][0][1], apply_median=False)
         segment_masks[index] = mask
 
     overlay_image()
