@@ -171,6 +171,10 @@ def process_image(file_path):
 def post_process_mask(mask, input_x, input_y):
     # Assuming mask is received with values 0 or 255
     mask_cv = mask.astype(np.uint8)
+
+    # Apply a median blur
+    mask_cv = cv2.medianBlur(mask_cv, 15)
+
     h, w = mask_cv.shape
 
     # Check if the input_point is within the bounds of the image
@@ -198,6 +202,7 @@ def post_process_mask(mask, input_x, input_y):
         cv2.drawContours(connected_component, [cnt], -1, 255, -1)
 
     return connected_component  # Return mask in the same format as input
+
 
 def generate_segment(input_point, event):
     global embeddings, resized_image, segment_masks, scaling_factor, current_index, selection_points, selected_segments
@@ -373,6 +378,22 @@ def clear_segment_list():
     for widget in segment_list_frame.winfo_children():
         widget.destroy()
 
+def on_segment_label_click(event, index):
+    global selected_segments, shift_down, alt_down
+    if shift_down:
+        if index not in selected_segments:
+            selected_segments.append(index)
+        else:
+            selected_segments.remove(index)
+    elif alt_down:
+        if index in selected_segments:
+            selected_segments.remove(index)
+    else:
+        selected_segments = [index]
+    
+    overlay_image()
+    update_segment_list()
+
 # Update the segment list
 def update_segment_list():
     global selected_segments
@@ -391,8 +412,10 @@ def update_segment_list():
             segment_label_text = f"{index + 1}: {x_size:.2f} x {y_size:.2f} inches"
             segment_label = tk.Label(segment_frame, text=segment_label_text, anchor='w', bg=color_hex, fg='black', padx=5, pady=5, bd=0)
             segment_label.pack(fill='x')
+            segment_label.bind("<Button-1>", lambda event, idx=index: on_segment_label_click(event, idx))
             if index in selected_segments:
                 segment_label.config(borderwidth=2, relief="flat", highlightbackground="blue", highlightcolor="blue", highlightthickness=2)
+
 
 def save_image_segments():
     global file_path, full_size_image, segment_masks
@@ -500,9 +523,11 @@ def create_menus():
     menu_bar.add_cascade(label="Edit", menu=edit_menu)
     edit_menu.add_command(label="Undo", accelerator="Ctrl+Z", command=undo)
     edit_menu.add_command(label="Redo", accelerator="Ctrl+R", command=redo)
-    edit_menu.add_command(label="Join Segments", accelerator="Ctrl+J", command=join_selected_segments)
+    edit_menu.add_separator()
     edit_menu.add_command(label="Select All", accelerator="Ctrl+A", command=select_all_segments)
     edit_menu.add_command(label="Select None", accelerator="Ctrl+N", command=select_no_segments)
+    edit_menu.add_separator()
+    edit_menu.add_command(label="Join Segments", accelerator="Ctrl+J", command=join_selected_segments)
     edit_menu.add_command(label="Delete Segment", accelerator="Ctrl+X", command=delete_selected_segment)
 
     root.bind("<Control-o>", lambda event: load_image())
