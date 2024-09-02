@@ -25,10 +25,11 @@ def select_no_segments():
     overlay_image()
     update_segment_list()
 
-def delete_selected_segments(selected_segments):
-    global segment_masks, selection_points, current_index
+def delete_selected_segments(selected_segments, undoable=True):
+    global segment_masks, selection_points
     if selected_segments:
-        push_state()  # Add current state to the stack for undo functionality
+        if undoable:
+            push_state()  # Add current state to the stack for undo functionality
         
         # Delete selected segments in reverse order to avoid indexing issues
         for index in sorted(selected_segments, reverse=True):
@@ -37,13 +38,12 @@ def delete_selected_segments(selected_segments):
         
         selected_segments = []
         
-        # Update current_index after deletion
-        current_index = len(segment_masks) - 1
+        # Update visuals
         overlay_image()
         update_segment_list()
 
 def join_selected_segments():
-    global segment_masks, selection_points, selected_segments, current_index
+    global segment_masks, selection_points, selected_segments
 
     if len(selected_segments) < 2:
         # print("Select at least two segments to join.")
@@ -83,19 +83,15 @@ def join_selected_segments():
     x, y = input_point[0][0], input_point[0][1]  # Properly extract x and y
     new_mask = post_process_mask(combined_mask, x, y)  # Use x and y in the function call
     segment_masks[min_index] = new_mask
-
-    # Save the post-processed combined mask
-    # Image.fromarray(new_mask).save('joined_post_processed.png')
-
     selected_segments = [min_index]
-    current_index = len(segment_masks) - 1
 
+    # Update visuals
     overlay_image()
     update_segment_list()
 
 # Split the selected segments vertically
 def split_vertical():
-    global segment_masks, selection_points, selected_segments, current_index, scaling_factor
+    global segment_masks, selection_points, selected_segments, scaling_factor
     push_state()  # Save the current state before modifying
 
     segments_to_delete = []
@@ -148,10 +144,7 @@ def split_vertical():
         selection_points.extend(new_points)
 
     # Delete the selected segments after splitting
-    delete_selected_segments(segments_to_delete)
-
-    # Adust the current index
-    current_index = len(segment_masks) - 1
+    delete_selected_segments(segments_to_delete, undoable=False)
 
     # Update the visuals
     overlay_image()
@@ -159,7 +152,7 @@ def split_vertical():
 
 # Split the selected segments horizontally
 def split_horizontal():
-    global segment_masks, selection_points, selected_segments, current_index, scaling_factor
+    global segment_masks, selection_points, selected_segments, scaling_factor
     push_state()  # Save the current state before modifying
 
     segments_to_delete = []
@@ -212,10 +205,7 @@ def split_horizontal():
         selection_points.extend(new_points)
 
     # Delete the selected segments after splitting
-    delete_selected_segments(segments_to_delete)
-
-    # Adjust the current index
-    current_index = len(segment_masks) - 1
+    delete_selected_segments(segments_to_delete, undoable=False)
 
     # Update the visuals
     overlay_image()
@@ -242,7 +232,7 @@ def calculate_color(index, saturation=1.0, value=1.0):
 
 # Load the image
 def load_image():
-    global full_size_image, resized_image, embeddings, segment_masks, scaling_factor, current_index, file_path
+    global full_size_image, resized_image, embeddings, segment_masks, scaling_factor, file_path
     file_path = filedialog.askopenfilename(filetypes=[("Image files", "*.jpg;*.jpeg;*.png;*.bmp;*.gif")])
     if file_path:
         root.config(cursor="watch")
@@ -250,7 +240,7 @@ def load_image():
 
 # Process the image
 def process_image(file_path):
-    global full_size_image, resized_image, embeddings, segment_masks, scaling_factor, current_index
+    global full_size_image, resized_image, embeddings, segment_masks, scaling_factor
     instruction_label.config(text="Running the Segment Anything model.")
     root.update_idletasks()
 
@@ -267,7 +257,6 @@ def process_image(file_path):
 
     # Clear the segment masks and set the current index
     segment_masks.clear()
-    current_index = -1
 
     # Prepare the image and run the encoder
     input_tensor = np.array(full_size_image)
@@ -350,7 +339,7 @@ def morphological_filter(amount):
     update_segment_list()
 
 def generate_segment(input_point):
-    global embeddings, resized_image, segment_masks, scaling_factor, current_index, selection_points, selected_segments
+    global embeddings, resized_image, segment_masks, scaling_factor, selection_points, selected_segments
 
     # Check if the image is loaded
     if embeddings is not None:
@@ -388,7 +377,6 @@ def generate_segment(input_point):
         segment_masks.append(new_mask)
         # selection_points.append((input_point[0], (event.x, event.y)))
         selection_points.append(input_point)
-        current_index += 1
 
 def remove_overlaps(new_mask):
     for existing_mask in segment_masks:
@@ -416,7 +404,7 @@ def find_segment_at_point(input_point):
 
 # Handle image click events
 def on_image_click(event):
-    global selected_segments, shift_down, alt_down
+    global selected_segments, segment_masks, shift_down, alt_down
 
     # Check if the image is loaded and process the click
     if embeddings is not None:
@@ -439,7 +427,7 @@ def on_image_click(event):
             # No existing segment clicked, so possibly create a new segment
             push_state()  # Save current state before modifying
             generate_segment(input_point)
-            new_index = current_index  # The current_index should now be the index of the new segment
+            new_index = len(segment_masks) - 1
             
             # Handle selection of the new segment depending on Shift
             if shift_down:
@@ -453,11 +441,11 @@ def on_image_click(event):
 
 # Add overlay to the image
 def overlay_image():
-    global resized_image, segment_masks, current_index, selection_points, selected_segments
+    global resized_image, segment_masks, selection_points, selected_segments
 
     # Create and draw the overlay image
     combined_overlay = Image.new("RGBA", resized_image.size, (255, 0, 0, 0))
-    for index in range(current_index + 1):
+    for index in range(len(segment_masks)):
         mask_resized = Image.fromarray(segment_masks[index]).resize(resized_image.size, Image.Resampling.NEAREST)
         color = calculate_color(index)
         colored_overlay = Image.new("RGBA", resized_image.size, color + (128,))
@@ -466,7 +454,7 @@ def overlay_image():
     draw = ImageDraw.Draw(combined_image)
 
     # Draw the selection points in the overlay image
-    for index, point in enumerate(selection_points[:current_index + 1]):
+    for index, point in enumerate(selection_points):
         x, y = int(point[0] / scaling_factor), int(point[1] / scaling_factor)
         color = calculate_color(index, saturation=0.5)
         outline_color = (0, 0, 255) if index in selected_segments else color
@@ -485,32 +473,29 @@ def overlay_image():
 
 # Undo function, Ctrl+Z
 def undo(event=None):
-    global segment_masks, selection_points, selected_segments, current_index
+    global segment_masks, selection_points, selected_segments
     if state_stack:
         redo_stack.append({
             "segment_masks": deepcopy(segment_masks),
             "selection_points": deepcopy(selection_points),
-            "selected_segments": deepcopy(selected_segments),
-            "current_index": current_index
+            "selected_segments": deepcopy(selected_segments)
         })
         last_state = pop_state()
         segment_masks = last_state["segment_masks"]
         selection_points = last_state["selection_points"]
         selected_segments = last_state["selected_segments"]
-        current_index = last_state["current_index"]
         overlay_image()
         update_segment_list()
 
 # Redo function, Ctrl+Y
 def redo(event=None):
-    global segment_masks, selection_points, selected_segments, current_index
+    global segment_masks, selection_points, selected_segments
     if redo_stack:
         push_state()
         state_to_restore = redo_stack.pop()
         segment_masks = state_to_restore["segment_masks"]
         selection_points = state_to_restore["selection_points"]
         selected_segments = state_to_restore["selected_segments"]
-        current_index = state_to_restore["current_index"]
         overlay_image()
         update_segment_list()
 
@@ -550,7 +535,7 @@ def update_segment_list():
     global selected_segments
     clear_segment_list()
     dpi = float(dpi_var.get())
-    for index, mask in enumerate(segment_masks[:current_index + 1]):
+    for index, mask in enumerate(segment_masks):
         mask_resized = Image.fromarray(mask).resize(full_size_image.size, Image.Resampling.NEAREST)
         bbox = mask_resized.getbbox()
         if bbox:
@@ -641,8 +626,7 @@ def push_state():
     current_state = {
         "segment_masks": deepcopy(segment_masks),
         "selection_points": deepcopy(selection_points),
-        "selected_segments": deepcopy(selected_segments),
-        "current_index": current_index
+        "selected_segments": deepcopy(selected_segments)
     }
     state_stack.append(current_state)
 
@@ -710,7 +694,6 @@ selection_points = []
 selected_segments = []
 scaling_factor = 1.0
 phi = 0.61803398875
-current_index = -1
 default_dpi = 60
 alt_down = False
 shift_down = False
