@@ -25,8 +25,8 @@ def select_no_segments():
     overlay_image()
     update_segment_list()
 
-def delete_selected_segment():
-    global segment_masks, selection_points, selected_segments, current_index
+def delete_selected_segments(selected_segments):
+    global segment_masks, selection_points, current_index
     if selected_segments:
         push_state()  # Add current state to the stack for undo functionality
         
@@ -64,7 +64,7 @@ def join_selected_segments():
     for idx in selected_segments:
         combined_mask = np.maximum(combined_mask, segment_masks[idx])
 
-    combined_mask = post_process_mask(combined_mask, selection_points[min_index][0][0], selection_points[min_index][0][1])
+    combined_mask = post_process_mask(combined_mask, selection_points[min_index][0], selection_points[min_index][1])
 
     print(f"Combined area before post-process: {np.sum(combined_mask)} pixels")
 
@@ -79,8 +79,9 @@ def join_selected_segments():
     selection_points = new_segment_points
 
     # Apply post-process to the combined mask
-    input_point = np.array(selection_points[min_index][0], ndmin=2)
-    new_mask = post_process_mask(combined_mask, input_point[0][0], input_point[0][1])
+    input_point = np.array(selection_points[min_index], ndmin=2)  # Ensure it is a 2D array
+    x, y = input_point[0][0], input_point[0][1]  # Properly extract x and y
+    new_mask = post_process_mask(combined_mask, x, y)  # Use x and y in the function call
     segment_masks[min_index] = new_mask
 
     # Save the post-processed combined mask
@@ -92,12 +93,133 @@ def join_selected_segments():
     overlay_image()
     update_segment_list()
 
-    # print("After joining:")
-    # for i, mask in enumerate(segment_masks):
-    #     area = np.sum(mask)
-    #     print(f"  Segment {i}: {area} pixels")
+# Split the selected segments vertically
+def split_vertical():
+    global segment_masks, selection_points, selected_segments, current_index, scaling_factor
+    push_state()  # Save the current state before modifying
 
-    # print(f"Segment {min_index} joined successfully.")
+    segments_to_delete = []
+
+    # Run the loop in reverse to avoid indexing issues
+    for index in sorted(selected_segments, reverse=True):
+        mask = segment_masks[index]
+        h, w = mask.shape
+        new_masks = []
+        new_points = []
+
+        # Use the selection point to find the blob for this segment
+        x, y = selection_points[index]
+        flood_mask = np.zeros((h + 2, w + 2), dtype=np.uint8)
+        cv2.floodFill(mask.copy(), flood_mask, (x, y), 255, flags=cv2.FLOODFILL_MASK_ONLY)
+        blob_mask = flood_mask[1:-1, 1:-1].astype(np.uint8)
+
+        # Calculate the bounding box for the blob and determine the split point
+        box_x, box_y, box_w, box_h = cv2.boundingRect(blob_mask)
+        split_point = box_y + box_h // 2
+
+        # Split the blob mask into top and bottom halves by zeroing out the respective parts
+        top_half = blob_mask.copy()
+        top_half[split_point:, :] = 0  # Zero out the bottom half
+
+        bottom_half = blob_mask.copy()
+        bottom_half[:split_point, :] = 0  # Zero out the top half
+
+        # Process each half to find distinct blobs and create new segments
+        for half, is_bottom_half in [(top_half, False), (bottom_half, True)]:
+            if half.any():
+                contours, _ = cv2.findContours(half, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                for contour in contours:
+                    M = cv2.moments(contour)
+                    if M['m00'] == 0:
+                        continue  # Skip this contour because its area is zero
+
+                    cx = int(M['m10'] / M['m00'])
+                    cy = int(M['m01'] / M['m00'])
+                    new_points.append((cx, cy))
+                    mask = np.zeros_like(blob_mask)
+                    cv2.drawContours(mask, [contour], -1, 255, thickness=cv2.FILLED)
+                    new_masks.append(mask)
+
+        # Keep track of the segments to delete after splitting
+        segments_to_delete.append(index)
+    
+        # Append the new masks and points
+        segment_masks.extend(new_masks)
+        selection_points.extend(new_points)
+
+    # Delete the selected segments after splitting
+    delete_selected_segments(segments_to_delete)
+
+    # Adust the current index
+    current_index = len(segment_masks) - 1
+
+    # Update the visuals
+    overlay_image()
+    update_segment_list()
+
+# Split the selected segments horizontally
+def split_horizontal():
+    global segment_masks, selection_points, selected_segments, current_index, scaling_factor
+    push_state()  # Save the current state before modifying
+
+    segments_to_delete = []
+
+    # Run the loop in reverse to avoid indexing issues
+    for index in sorted(selected_segments, reverse=True):
+        mask = segment_masks[index]
+        h, w = mask.shape
+        new_masks = []
+        new_points = []
+
+        # Use the selection point to find the blob for this segment
+        x, y = selection_points[index]
+        flood_mask = np.zeros((h + 2, w + 2), dtype=np.uint8)
+        cv2.floodFill(mask.copy(), flood_mask, (x, y), 255, flags=cv2.FLOODFILL_MASK_ONLY)
+        blob_mask = flood_mask[1:-1, 1:-1].astype(np.uint8)
+
+        # Calculate the bounding box for the blob and determine the split point
+        box_x, box_y, box_w, box_h = cv2.boundingRect(blob_mask)
+        split_point = box_x + box_w // 2
+
+        # Split the blob mask into left and right halves by zeroing out the respective parts
+        left_half = blob_mask.copy()
+        left_half[:, split_point:] = 0  # Zero out the right half
+
+        right_half = blob_mask.copy()
+        right_half[:, :split_point] = 0  # Zero out the left half
+
+        # Process each half to find distinct blobs and create new segments
+        for half, is_right_half in [(left_half, False), (right_half, True)]:
+            if half.any():
+                contours, _ = cv2.findContours(half, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                for contour in contours:
+                    M = cv2.moments(contour)
+                    if M['m00'] == 0:
+                        continue  # Skip this contour because its area is zero
+
+                    cx = int(M['m10'] / M['m00'])
+                    cy = int(M['m01'] / M['m00'])
+                    new_points.append((cx, cy))
+                    mask = np.zeros_like(blob_mask)
+                    cv2.drawContours(mask, [contour], -1, 255, thickness=cv2.FILLED)
+                    new_masks.append(mask)
+
+        # Keep track of the segments to delete after splitting
+        segments_to_delete.append(index)
+    
+        # Append the new masks and points
+        segment_masks.extend(new_masks)
+        selection_points.extend(new_points)
+
+    # Delete the selected segments after splitting
+    delete_selected_segments(segments_to_delete)
+
+    # Adjust the current index
+    current_index = len(segment_masks) - 1
+
+    # Update the visuals
+    overlay_image()
+    update_segment_list()
 
 # Download the ONNX model files if they don't exist
 def download_file(file_url_base, file_name):
@@ -221,20 +343,21 @@ def morphological_filter(amount):
             if i != index:
                 mask = mask & (~existing_mask)
         # Apply post-processing to the mask before updating the global segment_masks
-        mask = post_process_mask(mask, selection_points[index][0][0], selection_points[index][0][1], apply_median=False)
+        mask = post_process_mask(mask, selection_points[index][0], selection_points[index][1], apply_median=False)
         segment_masks[index] = mask
 
     overlay_image()
     update_segment_list()
 
-def generate_segment(input_point, event):
+def generate_segment(input_point):
     global embeddings, resized_image, segment_masks, scaling_factor, current_index, selection_points, selected_segments
 
     # Check if the image is loaded
     if embeddings is not None:
         # Prepare input for the ONNX model
+        input_point_array = np.array([input_point])  # Convert tuple to 2D array
         input_label = np.array([1])
-        onnx_coord = np.concatenate([input_point, np.array([[0.0, 0.0]])], axis=0)[None, :, :]
+        onnx_coord = np.concatenate([input_point_array, np.array([[0.0, 0.0]])], axis=0)[None, :, :]
         onnx_label = np.concatenate([input_label, np.array([-1])])[None, :].astype(np.float32)
         coords = deepcopy(onnx_coord).astype(float)
         coords[..., 0] = coords[..., 0] * (1024 / full_size_image.width)
@@ -259,11 +382,12 @@ def generate_segment(input_point, event):
 
         # Ensure new_mask is correctly processed against existing masks before and after post-processing
         new_mask = remove_overlaps(new_mask)
-        new_mask = post_process_mask(new_mask, input_point[0][0], input_point[0][1])
+        new_mask = post_process_mask(new_mask, input_point[0], input_point[1])
         new_mask = remove_overlaps(new_mask)
 
         segment_masks.append(new_mask)
-        selection_points.append((input_point[0], (event.x, event.y)))
+        # selection_points.append((input_point[0], (event.x, event.y)))
+        selection_points.append(input_point)
         current_index += 1
 
 def remove_overlaps(new_mask):
@@ -275,7 +399,7 @@ def find_segment_at_point(input_point):
     global segment_masks, full_size_image
 
     # Scale input point coordinates to match the original image dimensions
-    x, y = input_point[0][0], input_point[0][1]
+    x, y = input_point[0], input_point[1]
 
     # Iterate through all segment masks
     for index, mask in enumerate(segment_masks):
@@ -296,7 +420,8 @@ def on_image_click(event):
 
     # Check if the image is loaded and process the click
     if embeddings is not None:
-        input_point = np.array([[int(event.x * scaling_factor), int(event.y * scaling_factor)]])
+        # input_point = np.array([[int(event.x * scaling_factor), int(event.y * scaling_factor)]])
+        input_point = (int(event.x * scaling_factor), int(event.y * scaling_factor))
         existing_segment_index = find_segment_at_point(input_point)
 
         # Process based on whether a segment was clicked or not
@@ -313,7 +438,7 @@ def on_image_click(event):
         else:
             # No existing segment clicked, so possibly create a new segment
             push_state()  # Save current state before modifying
-            generate_segment(input_point, event)
+            generate_segment(input_point)
             new_index = current_index  # The current_index should now be the index of the new segment
             
             # Handle selection of the new segment depending on Shift
@@ -341,11 +466,11 @@ def overlay_image():
     draw = ImageDraw.Draw(combined_image)
 
     # Draw the selection points in the overlay image
-    for index, (point, screen_coord) in enumerate(selection_points[:current_index + 1]):
+    for index, point in enumerate(selection_points[:current_index + 1]):
+        x, y = int(point[0] / scaling_factor), int(point[1] / scaling_factor)
         color = calculate_color(index, saturation=0.5)
         outline_color = (0, 0, 255) if index in selected_segments else color
         circle_radius = 10
-        x, y = screen_coord
         draw.ellipse((x - circle_radius, y - circle_radius, x + circle_radius, y + circle_radius), fill=color, outline=outline_color, width=2)
         text = str(index + 1)
         text_width, text_height = draw.textbbox((0, 0), text)[2:]
@@ -553,7 +678,9 @@ def create_menus():
     edit_menu.add_command(label="Select None", accelerator="Ctrl+N", command=select_no_segments)
     edit_menu.add_separator()
     edit_menu.add_command(label="Join Segments", accelerator="Ctrl+J", command=join_selected_segments)
-    edit_menu.add_command(label="Delete Segment", accelerator="Ctrl+X", command=delete_selected_segment)
+    edit_menu.add_command(label="Split Horizontal", accelerator="Ctrl+H", command=split_horizontal)
+    edit_menu.add_command(label="Split Vertical", accelerator="Ctrl+V", command=split_vertical)
+    edit_menu.add_command(label="Delete Segment", accelerator="Ctrl+X", command=delete_selected_segments)
     edit_menu.add_separator()
     edit_menu.add_command(label="Grow Segments", accelerator="+", command=lambda: morphological_filter(1))
     edit_menu.add_command(label="Shrink Segments", accelerator="-", command=lambda: morphological_filter(-1))
@@ -566,8 +693,10 @@ def create_menus():
     root.bind("<Control-a>", lambda event: select_all_segments())
     root.bind("<Control-n>", lambda event: select_no_segments())
     root.bind("<Control-j>", lambda event: join_selected_segments())
-    root.bind("<Control-x>", lambda event: delete_selected_segment())
-    root.bind("<Delete>", lambda event: delete_selected_segment())
+    root.bind("<Control-h>", lambda event: split_horizontal())
+    root.bind("<Control-v>", lambda event: split_vertical())
+    root.bind("<Control-x>", lambda event: delete_selected_segments(selected_segments))
+    root.bind("<Delete>", lambda event: delete_selected_segments(selected_segments))
     root.bind("+", lambda event: morphological_filter(1))
     root.bind("-", lambda event: morphological_filter(-1))
 
