@@ -89,12 +89,14 @@ def join_selected_segments():
     overlay_image()
     update_segment_list()
 
-# Split the selected segments vertically
-def split_vertical():
+# Split the selected segments based on direction
+def split_segments(direction):
+    assert direction in ("horizontal", "vertical"), "Direction must be 'horizontal' or 'vertical'"
+
     global segment_masks, selection_points, selected_segments, scaling_factor
     push_state()  # Save the current state before modifying
-
-    segments_to_delete = []
+    segments_to_delete = [] # Initialize list to store segments to delete
+    new_segments_count = 0  # Initialize count of new segments
 
     # Run the loop in reverse to avoid indexing issues
     for index in sorted(selected_segments, reverse=True):
@@ -109,19 +111,27 @@ def split_vertical():
         cv2.floodFill(mask.copy(), flood_mask, (x, y), 255, flags=cv2.FLOODFILL_MASK_ONLY)
         blob_mask = flood_mask[1:-1, 1:-1].astype(np.uint8)
 
-        # Calculate the bounding box for the blob and determine the split point
+        # Calculate the bounding box for the blob
         box_x, box_y, box_w, box_h = cv2.boundingRect(blob_mask)
-        split_point = box_y + box_h // 2
-
-        # Split the blob mask into top and bottom halves by zeroing out the respective parts
-        top_half = blob_mask.copy()
-        top_half[split_point:, :] = 0  # Zero out the bottom half
-
-        bottom_half = blob_mask.copy()
-        bottom_half[:split_point, :] = 0  # Zero out the top half
+        
+        # Determine the split point based on the direction
+        if direction == "horizontal":
+            split_point = box_x + box_w // 2
+            left_half = blob_mask.copy()
+            right_half = blob_mask.copy()
+            left_half[:, split_point:] = 0
+            right_half[:, :split_point] = 0
+            halves = [(left_half, False), (right_half, True)]
+        else:  # vertical
+            split_point = box_y + box_h // 2
+            top_half = blob_mask.copy()
+            bottom_half = blob_mask.copy()
+            top_half[split_point:, :] = 0
+            bottom_half[:split_point, :] = 0
+            halves = [(top_half, False), (bottom_half, True)]
 
         # Process each half to find distinct blobs and create new segments
-        for half, is_bottom_half in [(top_half, False), (bottom_half, True)]:
+        for half, is_split_half in halves:
             if half.any():
                 contours, _ = cv2.findContours(half, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
                 for contour in contours:
@@ -135,10 +145,11 @@ def split_vertical():
                     mask = np.zeros_like(blob_mask)
                     cv2.drawContours(mask, [contour], -1, 255, thickness=cv2.FILLED)
                     new_masks.append(mask)
+                    new_segments_count += 1  # Increment the count of new segments
 
         # Keep track of the segments to delete after splitting
         segments_to_delete.append(index)
-    
+
         # Append the new masks and points
         segment_masks.extend(new_masks)
         selection_points.extend(new_points)
@@ -146,66 +157,9 @@ def split_vertical():
     # Delete the selected segments after splitting
     delete_selected_segments(segments_to_delete, undoable=False)
 
-    # Update the visuals
-    overlay_image()
-    update_segment_list()
-
-# Split the selected segments horizontally
-def split_horizontal():
-    global segment_masks, selection_points, selected_segments, scaling_factor
-    push_state()  # Save the current state before modifying
-
-    segments_to_delete = []
-
-    # Run the loop in reverse to avoid indexing issues
-    for index in sorted(selected_segments, reverse=True):
-        mask = segment_masks[index]
-        h, w = mask.shape
-        new_masks = []
-        new_points = []
-
-        # Use the selection point to find the blob for this segment
-        x, y = selection_points[index]
-        flood_mask = np.zeros((h + 2, w + 2), dtype=np.uint8)
-        cv2.floodFill(mask.copy(), flood_mask, (x, y), 255, flags=cv2.FLOODFILL_MASK_ONLY)
-        blob_mask = flood_mask[1:-1, 1:-1].astype(np.uint8)
-
-        # Calculate the bounding box for the blob and determine the split point
-        box_x, box_y, box_w, box_h = cv2.boundingRect(blob_mask)
-        split_point = box_x + box_w // 2
-
-        # Split the blob mask into left and right halves by zeroing out the respective parts
-        left_half = blob_mask.copy()
-        left_half[:, split_point:] = 0  # Zero out the right half
-
-        right_half = blob_mask.copy()
-        right_half[:, :split_point] = 0  # Zero out the left half
-
-        # Process each half to find distinct blobs and create new segments
-        for half, is_right_half in [(left_half, False), (right_half, True)]:
-            if half.any():
-                contours, _ = cv2.findContours(half, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-                for contour in contours:
-                    M = cv2.moments(contour)
-                    if M['m00'] == 0:
-                        continue  # Skip this contour because its area is zero
-
-                    cx = int(M['m10'] / M['m00'])
-                    cy = int(M['m01'] / M['m00'])
-                    new_points.append((cx, cy))
-                    mask = np.zeros_like(blob_mask)
-                    cv2.drawContours(mask, [contour], -1, 255, thickness=cv2.FILLED)
-                    new_masks.append(mask)
-
-        # Keep track of the segments to delete after splitting
-        segments_to_delete.append(index)
-    
-        # Append the new masks and points
-        segment_masks.extend(new_masks)
-        selection_points.extend(new_points)
-
-    # Delete the selected segments after splitting
-    delete_selected_segments(segments_to_delete, undoable=False)
+    # Set the selected_segments to the indices of the newly created segments
+    start_index = len(segment_masks) - new_segments_count
+    selected_segments = list(range(start_index, len(segment_masks)))
 
     # Update the visuals
     overlay_image()
@@ -665,8 +619,8 @@ def create_menus():
     edit_menu.add_command(label="Join Segments", accelerator="Ctrl+J", command=join_selected_segments)
     edit_menu.add_command(label="Delete Segment", accelerator="Ctrl+X", command=lambda: delete_selected_segments(selected_segments))
     edit_menu.add_separator()
-    edit_menu.add_command(label="Split Horizontal", accelerator="Ctrl+H", command=split_horizontal)
-    edit_menu.add_command(label="Split Vertical", accelerator="Ctrl+V", command=split_vertical)
+    edit_menu.add_command(label="Split Horizontal", accelerator="Ctrl+H", command=lambda: split_segments("horizontal"))
+    edit_menu.add_command(label="Split Vertical", accelerator="Ctrl+V", command=lambda: split_segments("vertical"))
     split_type_menu = tk.Menu(edit_menu, tearoff=0)
     edit_menu.add_cascade(label="Split Type", menu=split_type_menu)
     edit_menu.add_separator()
@@ -698,6 +652,24 @@ def create_menus():
             command=lambda split_item=split_item, option=option: (split_type_state[split_item].set(True), update_split_type(split_item, option))
         )
 
+    # Bind the keyboard shortcuts to the file menu options
+    root.bind("<Control-o>", lambda event: load_image())
+    root.bind("<Control-s>", lambda event: save_image_segments())
+    root.bind("<Control-q>", lambda event: exit_application())
+
+    # Bind the keyboard shortcuts to the edit menu options
+    root.bind("<Control-z>", lambda event: undo())
+    root.bind("<Control-r>", lambda event: redo())
+    root.bind("<Control-a>", lambda event: select_all_segments())
+    root.bind("<Control-n>", lambda event: select_no_segments())
+    root.bind("<Control-j>", lambda event: join_selected_segments())
+    root.bind("<Control-h>", lambda event: split_segments("horizontal"))
+    root.bind("<Control-v>", lambda event: split_segments("vertical"))
+    root.bind("<Control-x>", lambda event: delete_selected_segments())
+    root.bind("<Delete>", lambda event: delete_selected_segments())
+    root.bind("+", lambda event: morphological_filter(1))
+    root.bind("-", lambda event: morphological_filter(-1))
+
 # Function to update the selected split type
 def update_split_type(selected_split_type, option_name):
     global split_type, split_type_state
@@ -726,11 +698,9 @@ redo_stack = []
 root = tk.Tk()
 root.title("CanvasChopper")
 root.geometry("740x577")
-root.bind("<Control-z>", undo)
-root.bind("<Control-y>", redo)
 
 # Set the icon
-icon_image = tk.PhotoImage(file="canvas-chopper.png")
+icon_image = tk.PhotoImage(file="canvas_chopper.png")
 root.iconphoto(False, icon_image)
 
 # Define the load button
