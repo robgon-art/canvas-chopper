@@ -42,22 +42,13 @@ def delete_selected_segments(selected_segments, undoable=True):
         overlay_image()
         update_segment_list()
 
+# Join the selected segments into a single segment
 def join_selected_segments():
     global segment_masks, selection_points, selected_segments
-
     if len(selected_segments) < 2:
-        # print("Select at least two segments to join.")
         return
-    
-    # print(f"Before joining segments: {selected_segments}")
-    # for i, mask in enumerate(segment_masks):
-    #     area = np.sum(mask)
-    #     print(f"  Segment {i}: {area} pixels")
-    #     # Save each selected segment as a PNG file
-    #     Image.fromarray(mask.astype(np.uint8)).save(f'segment_{i + 1}.png')
 
     push_state()
-
     min_index = min(selected_segments)
     combined_mask = np.zeros_like(segment_masks[min_index], dtype=np.uint8)  # Ensure mask is initialized correctly
 
@@ -65,8 +56,6 @@ def join_selected_segments():
         combined_mask = np.maximum(combined_mask, segment_masks[idx])
 
     combined_mask = post_process_mask(combined_mask, selection_points[min_index][0], selection_points[min_index][1])
-
-    print(f"Combined area before post-process: {np.sum(combined_mask)} pixels")
 
     # Save the combined mask before post-processing
     # Image.fromarray(combined_mask.astype(np.uint8)).save('joined.png')
@@ -92,11 +81,11 @@ def join_selected_segments():
 # Split the selected segments based on direction
 def split_segments(direction):
     assert direction in ("horizontal", "vertical"), "Direction must be 'horizontal' or 'vertical'"
-
-    global segment_masks, selection_points, selected_segments, scaling_factor
+    global segment_masks, selection_points, selected_segments, scaling_factor, horizontal_split_points, vertical_split_points
     push_state()  # Save the current state before modifying
-    segments_to_delete = [] # Initialize list to store segments to delete
-    new_segments_count = 0  # Initialize count of new segments
+
+    segments_to_delete = []
+    new_segments_count = 0
 
     # Run the loop in reverse to avoid indexing issues
     for index in sorted(selected_segments, reverse=True):
@@ -114,30 +103,32 @@ def split_segments(direction):
         # Calculate the bounding box for the blob
         box_x, box_y, box_w, box_h = cv2.boundingRect(blob_mask)
         
-        # Determine the split point based on the direction
+        # Determine the split point and check against existing points
         if direction == "horizontal":
-            split_point = box_x + box_w // 2
-            left_half = blob_mask.copy()
-            right_half = blob_mask.copy()
-            left_half[:, split_point:] = 0
-            right_half[:, :split_point] = 0
-            halves = [(left_half, False), (right_half, True)]
+            proposed_split_point = box_x + box_w // 2
+            split_point = next((point for point in horizontal_split_points if abs(point - proposed_split_point) <= 32), proposed_split_point)
+            if split_point == proposed_split_point:
+                horizontal_split_points.append(split_point)
+            halves = [blob_mask.copy(), blob_mask.copy()]
+            halves[0][:, split_point:] = 0  # Left half
+            halves[1][:, :split_point] = 0  # Right half
         else:  # vertical
-            split_point = box_y + box_h // 2
-            top_half = blob_mask.copy()
-            bottom_half = blob_mask.copy()
-            top_half[split_point:, :] = 0
-            bottom_half[:split_point, :] = 0
-            halves = [(top_half, False), (bottom_half, True)]
+            proposed_split_point = box_y + box_h // 2
+            split_point = next((point for point in vertical_split_points if abs(point - proposed_split_point) <= 32), proposed_split_point)
+            if split_point == proposed_split_point:
+                vertical_split_points.append(split_point)
+            halves = [blob_mask.copy(), blob_mask.copy()]
+            halves[0][split_point:, :] = 0  # Top half
+            halves[1][:split_point, :] = 0  # Bottom half
 
         # Process each half to find distinct blobs and create new segments
-        for half, is_split_half in halves:
+        for half in halves:
             if half.any():
                 contours, _ = cv2.findContours(half, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
                 for contour in contours:
                     M = cv2.moments(contour)
                     if M['m00'] == 0:
-                        continue  # Skip this contour because its area is zero
+                        continue
 
                     cx = int(M['m10'] / M['m00'])
                     cy = int(M['m01'] / M['m00'])
@@ -145,7 +136,7 @@ def split_segments(direction):
                     mask = np.zeros_like(blob_mask)
                     cv2.drawContours(mask, [contour], -1, 255, thickness=cv2.FILLED)
                     new_masks.append(mask)
-                    new_segments_count += 1  # Increment the count of new segments
+                    new_segments_count += 1
 
         # Keep track of the segments to delete after splitting
         segments_to_delete.append(index)
@@ -172,8 +163,6 @@ def download_file(file_url_base, file_name):
         print(f"Downloading {file_name}...")
         urllib.request.urlretrieve(file_url, file_name)
         print(f"Downloaded {file_name} successfully.")
-    # else:
-    #     print(f"{file_name} already exists. Skipping download.")
 file_url_base = "https://huggingface.co/robgonsalves/segment-anything-8bit-onnx/resolve/main/"
 download_file(file_url_base, "sam_encoder.onnx")
 download_file(file_url_base, "sam_decoder.onnx")
@@ -509,7 +498,6 @@ def update_segment_list():
 def save_image_segments():
     global file_path, full_size_image, segment_masks
     if full_size_image is None or not segment_masks:
-        # print("No image or segments to save.")
         return
 
     # Get the base name of the loaded image and prepare the default subfolder name
@@ -541,20 +529,16 @@ def save_image_segments():
         segment_file_path = os.path.join(full_dir_name, f"segment_{index + 1:02}.png")
         segment_image.save(segment_file_path)
 
-    # print("Segments saved successfully.")
-
 # Track alt key press and release
 def alt_on(event):
     global alt_down
     if not alt_down:
-        # print("ALT ON")
         image_label.config(cursor="X_cursor")
     alt_down = True
 
 def alt_off(event):
     global alt_down
     if alt_down:
-        # print("ALT OFF")
         image_label.config(cursor="cross")
     alt_down = False
 
@@ -562,14 +546,12 @@ def alt_off(event):
 def shift_on(event):
     global shift_down
     if not shift_down:
-        # print("SHIFT ON")
         image_label.config(cursor="cross_reverse")
     shift_down = True
 
 def shift_off(event):
     global shift_down
     if shift_down:
-        # print("SHIFT OFF")
         image_label.config(cursor="cross")
     shift_down = False
 
@@ -693,6 +675,8 @@ alt_down = False
 shift_down = False
 state_stack = []
 redo_stack = []
+horizontal_split_points = []
+vertical_split_points = []
 
 # Main GUI
 root = tk.Tk()
