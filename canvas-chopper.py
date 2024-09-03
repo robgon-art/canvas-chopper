@@ -644,17 +644,18 @@ def create_menus():
     menu_bar = tk.Menu(root)
     root.config(menu=menu_bar)
 
-    # File menu
+    # File menu setup
     file_menu = tk.Menu(menu_bar, tearoff=0)
     menu_bar.add_cascade(label="File", menu=file_menu)
     file_menu.add_command(label="Open Image...", accelerator="Ctrl+O", command=load_image)
     file_menu.add_command(label="Save Segments...", accelerator="Ctrl+S", command=save_image_segments)
     file_menu.add_separator()
-    file_menu.add_command(label="Exit", accelerator="Ctrl+Q", command=exit_application)
+    file_menu.add_command(label="Exit", accelerator="Ctrl+Q", command=root.quit)
 
-    # Edit menu
+    # Edit menu setup
     edit_menu = tk.Menu(menu_bar, tearoff=0)
     menu_bar.add_cascade(label="Edit", menu=edit_menu)
+    # Typical edit actions
     edit_menu.add_command(label="Undo", accelerator="Ctrl+Z", command=undo)
     edit_menu.add_command(label="Redo", accelerator="Ctrl+R", command=redo)
     edit_menu.add_separator()
@@ -662,27 +663,48 @@ def create_menus():
     edit_menu.add_command(label="Select None", accelerator="Ctrl+N", command=select_no_segments)
     edit_menu.add_separator()
     edit_menu.add_command(label="Join Segments", accelerator="Ctrl+J", command=join_selected_segments)
+    edit_menu.add_command(label="Delete Segment", accelerator="Ctrl+X", command=lambda: delete_selected_segments(selected_segments))
+    edit_menu.add_separator()
     edit_menu.add_command(label="Split Horizontal", accelerator="Ctrl+H", command=split_horizontal)
     edit_menu.add_command(label="Split Vertical", accelerator="Ctrl+V", command=split_vertical)
-    edit_menu.add_command(label="Delete Segment", accelerator="Ctrl+X", command=delete_selected_segments)
+    split_type_menu = tk.Menu(edit_menu, tearoff=0)
+    edit_menu.add_cascade(label="Split Type", menu=split_type_menu)
     edit_menu.add_separator()
     edit_menu.add_command(label="Grow Segments", accelerator="+", command=lambda: morphological_filter(1))
     edit_menu.add_command(label="Shrink Segments", accelerator="-", command=lambda: morphological_filter(-1))
 
-    root.bind("<Control-o>", lambda event: load_image())
-    root.bind("<Control-s>", lambda event: save_image_segments())
-    root.bind("<Control-q>", lambda event: exit_application())
-    root.bind("<Control-z>", lambda event: undo())
-    root.bind("<Control-r>", lambda event: redo())
-    root.bind("<Control-a>", lambda event: select_all_segments())
-    root.bind("<Control-n>", lambda event: select_no_segments())
-    root.bind("<Control-j>", lambda event: join_selected_segments())
-    root.bind("<Control-h>", lambda event: split_horizontal())
-    root.bind("<Control-v>", lambda event: split_vertical())
-    root.bind("<Control-x>", lambda event: delete_selected_segments(selected_segments))
-    root.bind("<Delete>", lambda event: delete_selected_segments(selected_segments))
-    root.bind("+", lambda event: morphological_filter(1))
-    root.bind("-", lambda event: morphological_filter(-1))
+    # Initialize the dictionary for checkbutton variables
+    global split_type_state, split_type
+    split_type_state = {}
+    split_type = tk.StringVar(value="Straight")  # Default to "Straight"
+
+    # Define the options for split types
+    split_type_options = {
+        "Straight": "straight",
+        "Sine Wave": "sine_wave",
+        "Multi-Curve": "multi_curve",
+        "Image Contents": "image_contents"
+    }
+
+    # Populate split type variables and add checkbuttons dynamically using the default defined in split_type
+    for option, split_item in split_type_options.items():
+        is_default = (split_item == split_type_options[split_type.get()])
+        split_type_state[split_item] = tk.BooleanVar(value=is_default)
+        split_type_menu.add_checkbutton(
+            label=option,
+            onvalue=1,
+            offvalue=0,
+            variable=split_type_state[split_item],
+            command=lambda split_item=split_item, option=option: (split_type_state[split_item].set(True), update_split_type(split_item, option))
+        )
+
+# Function to update the selected split type
+def update_split_type(selected_split_type, option_name):
+    global split_type, split_type_state
+    for split_state in split_type_state:
+        if split_state != selected_split_type:
+            split_type_state[split_state].set(False)
+    split_type.set(option_name)  # Update the string variable to the current selection
 
 # Initialize global variables
 full_size_image = None
