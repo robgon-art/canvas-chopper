@@ -80,11 +80,20 @@ def join_selected_segments():
     overlay_image()
     update_segment_list()
 
+# Function to convert PIL Image to OpenCV Mat
+def pil_to_cv2(image):
+    return cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
+
+# Function to convert OpenCV Mat to PIL Image
+def cv2_to_pil(image):
+    return Image.fromarray(cv2.cvtColor(image, cv2.COLOR_BGR2RGB))
+
 # Function to create a mask for splitting images
 # split_point: The x or y coordinate to split the image
-# split_type: "Straight", "Sine Wave", or "Multi-Curve"
+# split_type: "Straight", "Sine Wave", "Multi-Curve", or "Image Contents"
 # direction: "horizontal" or "vertical"
 def create_split_mask(width, height, split_point, split_type="Sine Wave", direction="horizontal"):
+    global full_size_image
     # Set the random seed to split_point for consistency
     random.seed(split_point)
 
@@ -94,38 +103,85 @@ def create_split_mask(width, height, split_point, split_type="Sine Wave", direct
     else:
         adjusted_split_point = split_point
 
-    # Create a new blank image, white background
-    image = Image.new("1", (width, height), "white")
-    draw = ImageDraw.Draw(image)
+    if split_type == "Image Contents":
+        cv_image = pil_to_cv2(full_size_image)
 
-    if split_type == "Straight":
-        # Fill the top half of the image with black based on the split point
-        draw.rectangle((0, 0, width, adjusted_split_point), fill="black")
-    else:  # "Sine Wave" or "Multi-Curve"
-        # Calculate the sine wave and draw it
-        # Use a random phase from 0 to 2pi
-        amplitude_phase = random.uniform(0, 2 * math.pi)
-        frequency_phase = random.uniform(0, 2 * math.pi)
+        # Convert to grayscale
+        gray = cv2.cvtColor(cv_image, cv2.COLOR_BGR2GRAY)
 
-        # Loop through each x position
-        for x in range(width):
-            # Calculate the current amplitude and frequency
-            if split_type == "Sine Wave":
-                current_amplitude = 20
-                current_frequency = 4 * (2 * math.pi / width)
+        # Histogram equalize the grayscale image
+        equalized = cv2.equalizeHist(gray)
+
+        # Create a mask and apply the black and white rectangles based on split point
+        if direction == "vertical":
+            rect_1 = (0, 0, width, adjusted_split_point - 20)
+            rect_2 = (0, adjusted_split_point + 20, width, height)
+        else:
+            rect_1 = (0, 0, adjusted_split_point - 20, height)
+            rect_2 = (adjusted_split_point + 20, 0, width, height)
+
+        cv2.rectangle(equalized, rect_1[0:2], rect_1[2:4], 0, cv2.FILLED)
+        cv2.rectangle(equalized, rect_2[0:2], rect_2[2:4], 255, cv2.FILLED)
+
+        # Create a gradation mask with a gradation from black to white
+        gradation = np.zeros_like(equalized)
+        for i in range(-20, 20):
+            if direction == "vertical":
+                cv2.line(gradation, (0, adjusted_split_point + i), (width, adjusted_split_point + i),
+                         int(128 + 127 * (i + 20) / 40), 1)
             else:
-                current_amplitude = 20 + 20 * math.sin(math.pi * x / width + amplitude_phase)
-                current_frequency = (4 + 4 * math.sin(math.pi * x / width + frequency_phase)) * (2 * math.pi / width)
+                cv2.line(gradation, (adjusted_split_point + i, 0), (adjusted_split_point + i, height),
+                         int(128 + 127 * (i + 20) / 40), 1)
 
-            # Draw a line from the top to the sine wave position
-            y = int(adjusted_split_point + current_amplitude * math.sin(current_frequency * x))
-            draw.line((x, 0, x, y), fill="black")
+        cv2.rectangle(gradation, rect_1[0:2], rect_1[2:4], 0, cv2.FILLED)
+        cv2.rectangle(gradation, rect_2[0:2], rect_2[2:4], 255, cv2.FILLED)
 
-    # Rotate the image 270 degrees if the split direction is horizontal
-    if direction == "horizontal":
-        image = image.transpose(Image.ROTATE_270)
+        # Blend the gradation with the equalized image at 50% opacity
+        blended = cv2.addWeighted(equalized, 0.5, gradation, 0.5, 0)
 
-    return image
+        # Apply Gaussian blur
+        blurred = cv2.GaussianBlur(blended, (51, 51), 0)
+
+        # Threshold the image
+        _, thresholded = cv2.threshold(blurred, 128, 255, cv2.THRESH_BINARY)
+
+        # Convert back to PIL image
+        final_image = cv2_to_pil(thresholded).convert("L") #.convert("RGB") # thresholded
+        return final_image
+
+    else:
+        # Create a new blank image, white background
+        image = Image.new("1", (width, height), "white")
+        draw = ImageDraw.Draw(image)
+
+        if split_type == "Straight":
+            # Fill the top half of the image with black based on the split point
+            draw.rectangle((0, 0, width, adjusted_split_point), fill="black")
+        else:  # "Sine Wave" or "Multi-Curve"
+            # Calculate the sine wave and draw it
+            # Use a random phase from 0 to 2pi
+            amplitude_phase = random.uniform(0, 2 * math.pi)
+            frequency_phase = random.uniform(0, 2 * math.pi)
+
+            # Loop through each x position
+            for x in range(width):
+                # Calculate the current amplitude and frequency
+                if split_type == "Sine Wave":
+                    current_amplitude = 20
+                    current_frequency = 4 * (2 * math.pi / width)
+                else:
+                    current_amplitude = 20 + 20 * math.sin(math.pi * x / width + amplitude_phase)
+                    current_frequency = (4 + 4 * math.sin(math.pi * x / width + frequency_phase)) * (2 * math.pi / width)
+
+                # Draw a line from the top to the sine wave position
+                y = int(adjusted_split_point + current_amplitude * math.sin(current_frequency * x))
+                draw.line((x, 0, x, y), fill="black")
+
+        # Rotate the image 270 degrees if the split direction is horizontal
+        if direction == "horizontal":
+            image = image.transpose(Image.ROTATE_270)
+
+        return image
 
 # Updated split_segments function
 def split_segments(direction):
