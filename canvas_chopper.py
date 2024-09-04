@@ -99,9 +99,11 @@ def create_split_mask(width, height, split_point, split_type="Sine Wave", direct
 
     # Adjust split_point for horizontal direction before creating the image
     if direction == "horizontal":
-        adjusted_split_point = height - split_point
+        adjusted_split_point = width - split_point
     else:
         adjusted_split_point = split_point
+
+    # adjusted_split_point = split_point
 
     if split_type == "Image Contents":
         cv_image = pil_to_cv2(full_size_image)
@@ -114,11 +116,11 @@ def create_split_mask(width, height, split_point, split_type="Sine Wave", direct
 
         # Create a mask and apply the black and white rectangles based on split point
         if direction == "vertical":
-            rect_1 = (0, 0, width, adjusted_split_point - 20)
-            rect_2 = (0, adjusted_split_point + 20, width, height)
+            rect_1 = (0, 0, width, split_point - 20)
+            rect_2 = (0, split_point + 20, width, height)
         else:
-            rect_1 = (0, 0, adjusted_split_point - 20, height)
-            rect_2 = (adjusted_split_point + 20, 0, width, height)
+            rect_1 = (0, 0, split_point - 20, height)
+            rect_2 = (split_point + 20, 0, width, height)
 
         cv2.rectangle(equalized, rect_1[0:2], rect_1[2:4], 0, cv2.FILLED)
         cv2.rectangle(equalized, rect_2[0:2], rect_2[2:4], 255, cv2.FILLED)
@@ -127,10 +129,10 @@ def create_split_mask(width, height, split_point, split_type="Sine Wave", direct
         gradation = np.zeros_like(equalized)
         for i in range(-20, 20):
             if direction == "vertical":
-                cv2.line(gradation, (0, adjusted_split_point + i), (width, adjusted_split_point + i),
+                cv2.line(gradation, (0, split_point + i), (width, split_point + i),
                          int(128 + 127 * (i + 20) / 40), 1)
             else:
-                cv2.line(gradation, (adjusted_split_point + i, 0), (adjusted_split_point + i, height),
+                cv2.line(gradation, (split_point + i, 0), (split_point + i, height),
                          int(128 + 127 * (i + 20) / 40), 1)
 
         cv2.rectangle(gradation, rect_1[0:2], rect_1[2:4], 0, cv2.FILLED)
@@ -212,12 +214,12 @@ def split_segments(direction):
         # Determine the split point and check against existing points
         if direction == "horizontal":
             proposed_split_point = box_x + box_w // 2
-            split_point = next((point for point in horizontal_split_points if abs(point - proposed_split_point) <= 128), proposed_split_point)
+            split_point = next((point for point in horizontal_split_points if abs(point - proposed_split_point) <= 32), proposed_split_point)
             if split_point == proposed_split_point:
                 horizontal_split_points.append(split_point)
         else:  # vertical
             proposed_split_point = box_y + box_h // 2
-            split_point = next((point for point in vertical_split_points if abs(point - proposed_split_point) <= 128), proposed_split_point)
+            split_point = next((point for point in vertical_split_points if abs(point - proposed_split_point) <= 32), proposed_split_point)
             if split_point == proposed_split_point:
                 vertical_split_points.append(split_point)
 
