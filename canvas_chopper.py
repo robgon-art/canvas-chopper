@@ -10,6 +10,8 @@ import os
 import urllib.request
 import cv2
 import datetime
+import random
+import math
 
 from PIL import Image  # Ensure PIL is imported if not already
 
@@ -78,10 +80,58 @@ def join_selected_segments():
     overlay_image()
     update_segment_list()
 
-# Split the selected segments based on direction
+# Function to create a mask for splitting images
+# split_point: The x or y coordinate to split the image
+# split_type: "Straight", "Sine Wave", or "Multi-Curve"
+# direction: "horizontal" or "vertical"
+def create_split_mask(width, height, split_point, split_type="Sine Wave", direction="horizontal"):
+    # Set the random seed to split_point for consistency
+    random.seed(split_point)
+
+    # Adjust split_point for horizontal direction before creating the image
+    if direction == "horizontal":
+        adjusted_split_point = height - split_point
+    else:
+        adjusted_split_point = split_point
+
+    # Create a new blank image, white background
+    image = Image.new("1", (width, height), "white")
+    draw = ImageDraw.Draw(image)
+
+    if split_type == "Straight":
+        # Fill the top half of the image with black based on the split point
+        draw.rectangle((0, 0, width, adjusted_split_point), fill="black")
+    else:  # "Sine Wave" or "Multi-Curve"
+        # Calculate the sine wave and draw it
+        # Use a random phase from 0 to 2pi
+        amplitude_phase = random.uniform(0, 2 * math.pi)
+        frequency_phase = random.uniform(0, 2 * math.pi)
+
+        # Loop through each x position
+        for x in range(width):
+            # Calculate the current amplitude and frequency
+            if split_type == "Sine Wave":
+                current_amplitude = 20
+                current_frequency = 4 * (2 * math.pi / width)
+            else:
+                current_amplitude = 20 + 20 * math.sin(math.pi * x / width + amplitude_phase)
+                current_frequency = (4 + 4 * math.sin(math.pi * x / width + frequency_phase)) * (2 * math.pi / width)
+
+            # Draw a line from the top to the sine wave position
+            y = int(adjusted_split_point + current_amplitude * math.sin(current_frequency * x))
+            draw.line((x, 0, x, y), fill="black")
+
+    # Rotate the image 270 degrees if the split direction is horizontal
+    if direction == "horizontal":
+        image = image.transpose(Image.ROTATE_270)
+
+    return image
+
+# Updated split_segments function
 def split_segments(direction):
     assert direction in ("horizontal", "vertical"), "Direction must be 'horizontal' or 'vertical'"
-    global segment_masks, selection_points, selected_segments, scaling_factor, horizontal_split_points, vertical_split_points
+    global segment_masks, selection_points, selected_segments, scaling_factor, horizontal_split_points, vertical_split_points, split_type
+
     push_state()  # Save the current state before modifying
 
     segments_to_delete = []
@@ -106,22 +156,21 @@ def split_segments(direction):
         # Determine the split point and check against existing points
         if direction == "horizontal":
             proposed_split_point = box_x + box_w // 2
-            split_point = next((point for point in horizontal_split_points if abs(point - proposed_split_point) <= 32), proposed_split_point)
+            split_point = next((point for point in horizontal_split_points if abs(point - proposed_split_point) <= 128), proposed_split_point)
             if split_point == proposed_split_point:
                 horizontal_split_points.append(split_point)
-            halves = [blob_mask.copy(), blob_mask.copy()]
-            halves[0][:, split_point:] = 0  # Left half
-            halves[1][:, :split_point] = 0  # Right half
         else:  # vertical
             proposed_split_point = box_y + box_h // 2
-            split_point = next((point for point in vertical_split_points if abs(point - proposed_split_point) <= 32), proposed_split_point)
+            split_point = next((point for point in vertical_split_points if abs(point - proposed_split_point) <= 128), proposed_split_point)
             if split_point == proposed_split_point:
                 vertical_split_points.append(split_point)
-            halves = [blob_mask.copy(), blob_mask.copy()]
-            halves[0][split_point:, :] = 0  # Top half
-            halves[1][:split_point, :] = 0  # Bottom half
+
+        # Generate the split mask based on the selected split type
+        split_mask = create_split_mask(w, h, split_point, split_type.get(), direction)
+        split_mask_np = np.array(split_mask)
 
         # Process each half to find distinct blobs and create new segments
+        halves = [blob_mask & split_mask_np, blob_mask & (~split_mask_np)]
         for half in halves:
             if half.any():
                 contours, _ = cv2.findContours(half, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
@@ -647,8 +696,8 @@ def create_menus():
     root.bind("<Control-j>", lambda event: join_selected_segments())
     root.bind("<Control-h>", lambda event: split_segments("horizontal"))
     root.bind("<Control-v>", lambda event: split_segments("vertical"))
-    root.bind("<Control-x>", lambda event: delete_selected_segments())
-    root.bind("<Delete>", lambda event: delete_selected_segments())
+    root.bind("<Control-x>", lambda event: delete_selected_segments(selected_segments))
+    root.bind("<Delete>", lambda event: delete_selected_segments(selected_segments))
     root.bind("+", lambda event: morphological_filter(1))
     root.bind("-", lambda event: morphological_filter(-1))
 
