@@ -788,7 +788,7 @@ vertical_split_points = []
 # Main GUI
 root = tk.Tk()
 root.title("CanvasChopper")
-root.geometry("740x577")
+root.geometry("680x577")
 
 # Set the icon
 icon_image = tk.PhotoImage(file="canvas_chopper.png")
@@ -828,7 +828,7 @@ segment_list_canvas = tk.Canvas(root)
 segment_list_canvas.place(x=522, y=40, anchor='nw', width=213, height=512)
 segment_list_frame = tk.Frame(segment_list_canvas)
 segment_list_scrollbar = ttk.Scrollbar(root, orient="vertical", command=segment_list_canvas.yview)
-segment_list_scrollbar.place(x=735, y=40, anchor='ne', height=512)
+segment_list_scrollbar.place(x=680, y=40, anchor='ne', height=512)
 segment_list_canvas.configure(yscrollcommand=segment_list_scrollbar.set)
 segment_list_canvas.create_window((0, 0), window=segment_list_frame, anchor='nw')
 segment_list_frame.bind("<Configure>", lambda e: segment_list_canvas.configure(scrollregion=segment_list_canvas.bbox("all")))
