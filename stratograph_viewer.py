@@ -1,43 +1,9 @@
 import vtk
 from vtkmodules.qt.QVTKRenderWindowInteractor import QVTKRenderWindowInteractor
 from PyQt5.QtWidgets import QApplication, QMainWindow, QWidget, QStatusBar, QFileDialog, QAction
+from PyQt5.QtCore import Qt, QThread, pyqtSignal, QObject
 import json
 import os
-from PyQt5.QtCore import Qt
-
-# Function to read the file and return the layer data
-def extract_layers(file_path):
-    # Read the contents of the file
-    with open(file_path, 'r') as file:
-        data = json.load(file)
-
-    # Helper function to convert hex color to RGB (normalized to 0-1 range)
-    def hex_to_rgb_normalized(hex_color):
-        hex_color = hex_color.lstrip('#')
-        return [round(int(hex_color[i:i+2], 16) / 255, 2) for i in (0, 2, 4)]
-
-    # Read the base_layer_height and layer_height values
-    base_layer_height = data['base_layer_height']
-    layer_height = data['layer_height']
-
-    # Extract filament information in reverse order and calculate Depth
-    layers = []
-    for index, filament in enumerate(reversed(data['filament_set'])):
-        rgb_normalized = hex_to_rgb_normalized(filament['Color'])
-        slider_value = data['slider_values'][index]
-        depth = base_layer_height + slider_value * layer_height
-        layers.append({
-            'Layer': index,
-            'Brand': filament['Brand'],
-            'Name': filament['Name'],
-            'Color (RGB)': rgb_normalized,
-            'Transmissivity': filament['Transmissivity'],
-            'Type': filament['Type'],
-            'Slider': slider_value,
-            'Depth': round(depth, 2)  # Round the depth for clarity
-        })
-
-    return layers
 
 # Function to slice the model at a specific depth
 def slice_model_at_depth(input_data, depth):
@@ -78,12 +44,35 @@ def slice_model_at_depth_range(input_data, lower_limit, upper_limit):
 
     return clip_lower.GetOutput()
 
-def export_layer_as_stl(layer_data, file_name):
-    # Create an STL writer
-    writer = vtk.vtkSTLWriter()
-    writer.SetFileName(file_name)
-    writer.SetInputData(layer_data)
-    writer.Write()
+# Function to read the file and return the layer data
+def extract_layers(file_path):
+    with open(file_path, 'r') as file:
+        data = json.load(file)
+
+    def hex_to_rgb_normalized(hex_color):
+        hex_color = hex_color.lstrip('#')
+        return [round(int(hex_color[i:i+2], 16) / 255, 2) for i in (0, 2, 4)]
+
+    base_layer_height = data['base_layer_height']
+    layer_height = data['layer_height']
+
+    layers = []
+    for index, filament in enumerate(reversed(data['filament_set'])):
+        rgb_normalized = hex_to_rgb_normalized(filament['Color'])
+        slider_value = data['slider_values'][index]
+        depth = base_layer_height + slider_value * layer_height
+        layers.append({
+            'Layer': index,
+            'Brand': filament['Brand'],
+            'Name': filament['Name'],
+            'Color (RGB)': rgb_normalized,
+            'Transmissivity': filament['Transmissivity'],
+            'Type': filament['Type'],
+            'Slider': slider_value,
+            'Depth': round(depth, 2)
+        })
+
+    return layers
 
 # Grouping the actors together using vtkAssembly
 def divide_model_into_layers(input_data, layers):
@@ -122,119 +111,110 @@ def divide_model_into_layers(input_data, layers):
 
     return assembly
 
+class FileLoaderWorker(QObject):
+    finished = pyqtSignal(object)
+    error = pyqtSignal(Exception)
+    status_update = pyqtSignal(str)
+
+    def __init__(self, file_name):
+        super().__init__()
+        self.file_name = file_name
+
+    def run(self):
+        try:
+            self.status_update.emit("Loading STL file...")
+            reader = vtk.vtkSTLReader()
+            reader.SetFileName(self.file_name)
+            reader.Update()
+
+            model_data = reader.GetOutput()
+            stl_base_name = os.path.basename(self.file_name)
+            prefix = stl_base_name.split("_Front_")[0]
+            hfp_file_name = f"{prefix}.hfp"
+            hfp_file_path = os.path.join(os.path.dirname(self.file_name), hfp_file_name)
+
+            if os.path.exists(hfp_file_path):
+                layers = extract_layers(hfp_file_path)
+                assembly = divide_model_into_layers(model_data, layers)
+                self.status_update.emit("Rendering model...")
+                self.finished.emit(assembly)
+            else:
+                self.error.emit(RuntimeError(f"No corresponding HFP file found: {hfp_file_name}"))
+        except Exception as e:
+            self.error.emit(e)
 
 class STLViewer(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Stratograph Viewer")
         self.setGeometry(100, 100, 800, 800)
-
-        # Create the central widget
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
-
-        # Create the VTK widget
         self.vtk_widget = QVTKRenderWindowInteractor()
         self.vtk_widget.setParent(central_widget)
         self.vtk_widget.setGeometry(0, 0, 800, 800)
-
-        # Create the renderer
         self.renderer = vtk.vtkRenderer()
         self.renderer.SetBackground(vtk.vtkNamedColors().GetColor3d("DimGray"))
         self.vtk_widget.GetRenderWindow().AddRenderer(self.renderer)
-
-        # Create the interactor style
         self.interactor_style = vtk.vtkInteractorStyleTrackballActor()
         self.vtk_widget.GetRenderWindow().GetInteractor().SetInteractorStyle(self.interactor_style)
-
-        # Create the status bar
         self.status_bar = QStatusBar()
         self.setStatusBar(self.status_bar)
-
-        # Create the file menu
         menu_bar = self.menuBar()
         file_menu = menu_bar.addMenu("File")
-
-        # Create the Load STL action
         load_stl_action = QAction("Load STL", self)
         load_stl_action.triggered.connect(self.load_stl)
         file_menu.addAction(load_stl_action)
-
-        # Add keyboard shortcuts for Blender-style navigation
         self.vtk_widget.GetRenderWindow().GetInteractor().AddObserver("KeyPressEvent", self.on_key_press)
-
-        # Show the window
         self.show()
 
     def load_stl(self):
         file_name, _ = QFileDialog.getOpenFileName(self, "Load STL File", "", "STL Files (*.stl)")
         if file_name:
-            try:
-                # Load the STL file
-                reader = vtk.vtkSTLReader()
-                reader.SetFileName(file_name)
-                reader.Update()
+            self.worker = FileLoaderWorker(file_name)
+            self.thread = QThread()
+            self.worker.moveToThread(self.thread)
+            self.worker.finished.connect(self.handle_finished)
+            self.worker.error.connect(self.handle_error)
+            self.worker.status_update.connect(self.status_bar.showMessage)
+            QApplication.setOverrideCursor(Qt.WaitCursor)  # Show the watch cursor
+            self.thread.started.connect(self.worker.run)
+            self.thread.start()
 
-                model_data = reader.GetOutput()
+    def handle_finished(self, assembly):
+        self.renderer.AddActor(assembly)
+        self.renderer.ResetCamera()
+        self.vtk_widget.GetRenderWindow().Render()
+        QApplication.restoreOverrideCursor()  # Restore the default cursor
+        self.status_bar.showMessage("STL and HFP files loaded successfully.")
+        self.thread.quit()
+        self.thread.wait()
 
-                # Find the corresponding hfp file
-                stl_base_name = os.path.basename(file_name)
-                if "_Front_" in stl_base_name:
-                    prefix = stl_base_name.split("_Front_")[0]
-                    hfp_file_name = f"{prefix}.hfp"
-                    hfp_file_path = os.path.join(os.path.dirname(file_name), hfp_file_name)
-
-                    if os.path.exists(hfp_file_path):
-                        # Set the status bar message and change to a wait cursor
-                        self.status_bar.showMessage("Loading the STL and HFP files.")
-                        self.repaint()
-                        self.setCursor(Qt.WaitCursor)
-                        QApplication.processEvents()
-
-                        layers = extract_layers(hfp_file_path)
-                        print(f"Loaded hfp file: {hfp_file_name}")
-                        for i, layer in enumerate(layers):
-                            print(layer)
-
-                            # Divide the model into layers and apply materials
-                            assembly = divide_model_into_layers(model_data, layers)
-
-                        # Add the assembly to the renderer instead of individual actors
-                        self.renderer.AddActor(assembly)
-                        self.renderer.ResetCamera()
-                        self.vtk_widget.GetRenderWindow().Render()
-
-                        # Reset the cursor and show a completion message
-                        self.setCursor(Qt.ArrowCursor)
-                        self.status_bar.showMessage("STL and HFP files loaded successfully.")
-                    else:
-                        print(f"No corresponding hfp file found: {hfp_file_name}")
-
-            except Exception as e:
-                self.status_bar.showMessage(f"Error loading STL file: {e}")
+    def handle_error(self, e):
+        QApplication.restoreOverrideCursor()  # Restore the default cursor
+        self.status_bar.showMessage(f"Error loading STL file: {str(e)}")
+        self.thread.quit()
+        self.thread.wait()
 
     def on_key_press(self, obj, event):
         key = obj.GetKeySym()
         camera = self.renderer.GetActiveCamera()
-        
-        # Move the camera around the object while maintaining focus
-        if key == 'Left':  # Rotate view left
+        if key == 'Left':
             camera.Azimuth(10)
-        elif key == 'Right':  # Rotate view right
+        elif key == 'Right':
             camera.Azimuth(-10)
-        elif key == 'Up':  # Rotate view up
+        elif key == 'Up':
             camera.Elevation(10)
-        elif key == 'Down':  # Rotate view down
+        elif key == 'Down':
             camera.Elevation(-10)
-        elif key == 'plus':  # Zoom in
+        elif key == 'plus':
             camera.Zoom(1.1)
-        elif key == 'minus':  # Zoom out
+        elif key == 'minus':
             camera.Zoom(0.9)
-        elif key == 'End':  # Reset azimuth and elevation to default orientation
-            camera.SetPosition(0, 0, 493)  # Set default position (camera is 493 units away from the object)
-            camera.SetFocalPoint(0, 0, 1.16) # Set focal point to the center
-            camera.SetViewUp(0, 1, 0)  # Set the view-up vector (pointing up the Y axis)
-
+        elif key == 'End':
+            camera.SetPosition(0, 0, 493)
+            camera.SetFocalPoint(0, 0, 1.16)
+            camera.SetViewUp(0, 1, 0)
         self.renderer.ResetCameraClippingRange()
         self.vtk_widget.GetRenderWindow().Render()
 
