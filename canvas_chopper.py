@@ -1,6 +1,6 @@
 import tkinter as tk
 from tkinter import filedialog, ttk
-from PIL import Image, ImageTk, ImageEnhance, ImageDraw
+from PIL import Image, ImageTk, ImageDraw
 import onnxruntime as ort
 import numpy as np
 from copy import deepcopy
@@ -88,180 +88,187 @@ def pil_to_cv2(image):
 def cv2_to_pil(image):
     return Image.fromarray(cv2.cvtColor(image, cv2.COLOR_BGR2RGB))
 
-# Function to create a mask for splitting images
-# split_point: The x or y coordinate to split the image
-# split_type: "Straight", "Sine Wave", "Multi-Curve", or "Image Contents"
-# direction: "horizontal" or "vertical"
-def create_split_mask(width, height, split_point, split_type="Sine Wave", direction="horizontal"):
-    global full_size_image
-    # Set the random seed to split_point for consistency
-    random.seed(split_point)
-
-    # Adjust split_point for horizontal direction before creating the image
-    if direction == "horizontal":
-        adjusted_split_point = width - split_point
-    else:
-        adjusted_split_point = split_point
-
-    # adjusted_split_point = split_point
-
+def create_split_mask_along_line(width, height, x0, y0, x1, y1, split_type="Straight"):
     if split_type == "Image Contents":
-        cv_image = pil_to_cv2(full_size_image)
+        return create_image_contents_mask(width, height, x0, y0, x1, y1)
+    elif split_type == "Sine Wave":
+        return create_wave_mask(width, height, x0, y0, x1, y1, wave_type="sine")
+    elif split_type == "Multi-Curve":
+        return create_wave_mask(width, height, x0, y0, x1, y1, wave_type="multi_curve")
+    else:  # Default to Straight
+        return create_straight_mask(width, height, x0, y0, x1, y1)
 
-        # Convert to grayscale
-        gray = cv2.cvtColor(cv_image, cv2.COLOR_BGR2GRAY)
+def create_straight_mask(width, height, x0, y0, x1, y1):
+    X, Y = np.meshgrid(np.arange(width), np.arange(height))
+    line_dx = x1 - x0
+    line_dy = y1 - y0
+    line_length = np.hypot(line_dx, line_dy)
+    if line_length == 0:
+        line_length = 1e-8  # Avoid division by zero
+    line_unit_dx = line_dx / line_length
+    line_unit_dy = line_dy / line_length
 
-        # Histogram equalize the grayscale image
-        equalized = cv2.equalizeHist(gray)
+    vec_x = X - x0
+    vec_y = Y - y0
 
-        # Create a mask and apply the black and white rectangles based on split point
-        if direction == "vertical":
-            rect_1 = (0, 0, width, split_point - 20)
-            rect_2 = (0, split_point + 20, width, height)
-        else:
-            rect_1 = (0, 0, split_point - 20, height)
-            rect_2 = (split_point + 20, 0, width, height)
+    d = (line_unit_dx * vec_y) - (line_unit_dy * vec_x)
+    split_mask = (d > 0).astype(np.uint8) * 255
+    return split_mask
 
-        cv2.rectangle(equalized, rect_1[0:2], rect_1[2:4], 0, cv2.FILLED)
-        cv2.rectangle(equalized, rect_2[0:2], rect_2[2:4], 255, cv2.FILLED)
+def create_wave_mask(width, height, x0, y0, x1, y1, wave_type="sine"):
+    X, Y = np.meshgrid(np.arange(width), np.arange(height))
+    line_dx = x1 - x0
+    line_dy = y1 - y0
+    line_length = np.hypot(line_dx, line_dy)
+    if line_length == 0:
+        line_length = 1e-8
+    line_unit_dx = line_dx / line_length
+    line_unit_dy = line_dy / line_length
 
-        # Create a gradation mask with a gradation from black to white
-        gradation = np.zeros_like(equalized)
-        for i in range(-20, 20):
-            if direction == "vertical":
-                cv2.line(gradation, (0, split_point + i), (width, split_point + i),
-                         int(128 + 127 * (i + 20) / 40), 1)
-            else:
-                cv2.line(gradation, (split_point + i, 0), (split_point + i, height),
-                         int(128 + 127 * (i + 20) / 40), 1)
+    vec_x = X - x0
+    vec_y = Y - y0
+    t = vec_x * line_unit_dx + vec_y * line_unit_dy
+    d = (line_unit_dx * vec_y) - (line_unit_dy * vec_x)
 
-        cv2.rectangle(gradation, rect_1[0:2], rect_1[2:4], 0, cv2.FILLED)
-        cv2.rectangle(gradation, rect_2[0:2], rect_2[2:4], 255, cv2.FILLED)
+    random.seed(int(x0 + y0 + x1 + y1))
+    amplitude_phase = random.uniform(0, 2 * math.pi)
+    frequency_phase = random.uniform(0, 2 * math.pi)
 
-        # Blend the gradation with the equalized image at 50% opacity
-        blended = cv2.addWeighted(equalized, 0.5, gradation, 0.5, 0)
+    if wave_type == "sine":
+        amplitude = 20  # pixels
+        frequency = 4 * (2 * math.pi / line_length)
+        boundary = amplitude * np.sin(frequency * t + amplitude_phase)
+    elif wave_type == "multi_curve":
+        amplitude = 20 + 20 * np.sin(math.pi * t / line_length + amplitude_phase)
+        frequency = (4 + 4 * np.sin(math.pi * t / line_length + frequency_phase)) * (2 * math.pi / line_length)
+        boundary = amplitude * np.sin(frequency * t + amplitude_phase)
 
-        # Apply Gaussian blur
-        blurred = cv2.GaussianBlur(blended, (51, 51), 0)
+    split_mask = (d > boundary).astype(np.uint8) * 255
+    return split_mask
 
-        # Threshold the image
-        _, thresholded = cv2.threshold(blurred, 128, 255, cv2.THRESH_BINARY)
+def create_image_contents_mask(width, height, x0, y0, x1, y1):
+    global full_size_image
+    cv_image = pil_to_cv2(full_size_image)
 
-        # Convert back to PIL image
-        final_image = cv2_to_pil(thresholded).convert("L") #.convert("RGB") # thresholded
-        return final_image
+    # Convert to grayscale
+    gray = cv2.cvtColor(cv_image, cv2.COLOR_BGR2GRAY)
 
-    else:
-        # Create a new blank image, white background
-        image = Image.new("1", (width, height), "white")
-        draw = ImageDraw.Draw(image)
+    # Histogram equalize the grayscale image
+    equalized = cv2.equalizeHist(gray)
 
-        if split_type == "Straight":
-            # Fill the top half of the image with black based on the split point
-            draw.rectangle((0, 0, width, adjusted_split_point), fill="black")
-        else:  # "Sine Wave" or "Multi-Curve"
-            # Calculate the sine wave and draw it
-            # Use a random phase from 0 to 2pi
-            amplitude_phase = random.uniform(0, 2 * math.pi)
-            frequency_phase = random.uniform(0, 2 * math.pi)
+    # Compute distance from each pixel to the split line
+    X, Y = np.meshgrid(np.arange(width), np.arange(height))
+    line_dx = x1 - x0
+    line_dy = y1 - y0
+    line_length = np.hypot(line_dx, line_dy)
+    if line_length == 0:
+        line_length = 1e-8  # Avoid division by zero
+    line_unit_dx = line_dx / line_length
+    line_unit_dy = line_dy / line_length
 
-            # Loop through each x position
-            for x in range(width):
-                # Calculate the current amplitude and frequency
-                if split_type == "Sine Wave":
-                    current_amplitude = 20
-                    current_frequency = 4 * (2 * math.pi / width)
-                else:
-                    current_amplitude = 20 + 20 * math.sin(math.pi * x / width + amplitude_phase)
-                    current_frequency = (4 + 4 * math.sin(math.pi * x / width + frequency_phase)) * (2 * math.pi / width)
+    vec_x = X - x0
+    vec_y = Y - y0
+    d = (line_unit_dx * vec_y) - (line_unit_dy * vec_x)
 
-                # Draw a line from the top to the sine wave position
-                y = int(adjusted_split_point + current_amplitude * math.sin(current_frequency * x))
-                draw.line((x, 0, x, y), fill="black")
+    # Create a gradation mask with a gradation from black to white across the line
+    transition_width = 40  # Adjust the width of the transition as needed
+    gradation = np.clip((d + transition_width / 2) / transition_width * 255, 0, 255).astype(np.uint8)
 
-        # Rotate the image 270 degrees if the split direction is horizontal
-        if direction == "horizontal":
-            image = image.transpose(Image.ROTATE_270)
+    # Blend the gradation with the equalized image at 50% opacity
+    blended = cv2.addWeighted(equalized, 0.5, gradation, 0.5, 0)
 
-        return image
+    # Apply Gaussian blur for smooth transitions
+    blurred = cv2.GaussianBlur(blended, (51, 51), 0)
 
-# Updated split_segments function
-def split_segments(direction):
-    assert direction in ("horizontal", "vertical"), "Direction must be 'horizontal' or 'vertical'"
-    global segment_masks, selection_points, selected_segments, scaling_factor, horizontal_split_points, vertical_split_points, split_type
+    # Threshold the image to get binary mask
+    _, thresholded = cv2.threshold(blurred, 128, 255, cv2.THRESH_BINARY)
 
-    push_state()  # Save the current state before modifying
+    split_mask = thresholded
 
+    return split_mask
+
+def split_selected_segments_along_line(x0, y0, x1, y1, split_type):
+    global segment_masks, selection_points, selected_segments
+    push_state()  # Save the current state for undo functionality
     segments_to_delete = []
     new_segments_count = 0
 
-    # Run the loop in reverse to avoid indexing issues
+    # Create the split mask based on the drawn line and split_type
+    width, height = full_size_image.size
+    split_mask = create_split_mask_along_line(width, height, x0, y0, x1, y1, split_type)
+
+    # Iterate over selected segments to apply the split
     for index in sorted(selected_segments, reverse=True):
         mask = segment_masks[index]
-        h, w = mask.shape
         new_masks = []
         new_points = []
 
-        # Use the selection point to find the blob for this segment
-        x, y = selection_points[index]
-        flood_mask = np.zeros((h + 2, w + 2), dtype=np.uint8)
-        cv2.floodFill(mask.copy(), flood_mask, (x, y), 255, flags=cv2.FLOODFILL_MASK_ONLY)
-        blob_mask = flood_mask[1:-1, 1:-1].astype(np.uint8)
-
-        # Calculate the bounding box for the blob
-        box_x, box_y, box_w, box_h = cv2.boundingRect(blob_mask)
-        
-        # Determine the split point and check against existing points
-        if direction == "horizontal":
-            proposed_split_point = box_x + box_w // 2
-            split_point = next((point for point in horizontal_split_points if abs(point - proposed_split_point) <= 32), proposed_split_point)
-            if split_point == proposed_split_point:
-                horizontal_split_points.append(split_point)
-        else:  # vertical
-            proposed_split_point = box_y + box_h // 2
-            split_point = next((point for point in vertical_split_points if abs(point - proposed_split_point) <= 32), proposed_split_point)
-            if split_point == proposed_split_point:
-                vertical_split_points.append(split_point)
-
-        # Generate the split mask based on the selected split type
-        split_mask = create_split_mask(w, h, split_point, split_type.get(), direction)
-        split_mask_np = np.array(split_mask)
-
-        # Process each half to find distinct blobs and create new segments
-        halves = [blob_mask & split_mask_np, blob_mask & (~split_mask_np)]
+        # Split the mask into two halves using the split mask
+        halves = [mask & split_mask, mask & (~split_mask)]
         for half in halves:
             if half.any():
+                # Find contours in the split half
                 contours, _ = cv2.findContours(half, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
                 for contour in contours:
                     M = cv2.moments(contour)
                     if M['m00'] == 0:
                         continue
-
+                    # Calculate the centroid for the new segment
                     cx = int(M['m10'] / M['m00'])
                     cy = int(M['m01'] / M['m00'])
                     new_points.append((cx, cy))
-                    mask = np.zeros_like(blob_mask)
-                    cv2.drawContours(mask, [contour], -1, 255, thickness=cv2.FILLED)
-                    new_masks.append(mask)
+                    # Create a new mask for the segment
+                    new_mask = np.zeros_like(mask)
+                    cv2.drawContours(new_mask, [contour], -1, 255, thickness=cv2.FILLED)
+                    new_masks.append(new_mask)
                     new_segments_count += 1
 
-        # Keep track of the segments to delete after splitting
         segments_to_delete.append(index)
-
-        # Append the new masks and points
         segment_masks.extend(new_masks)
         selection_points.extend(new_points)
 
-    # Delete the selected segments after splitting
+    # Delete the original segments that were split
     delete_selected_segments(segments_to_delete, undoable=False)
 
-    # Set the selected_segments to the indices of the newly created segments
+    # Update selected segments to the newly created ones
     start_index = len(segment_masks) - new_segments_count
     selected_segments = list(range(start_index, len(segment_masks)))
 
-    # Update the visuals
+    # Refresh the display
     overlay_image()
     update_segment_list()
+
+def perform_manual_split(start_point, end_point):
+    # Convert points to full image coordinates
+    x0 = int(start_point[0] * scaling_factor)
+    y0 = int(start_point[1] * scaling_factor)
+    x1 = int(end_point[0] * scaling_factor)
+    y1 = int(end_point[1] * scaling_factor)
+    # Ensure coordinates are within image bounds
+    x0 = max(0, min(x0, full_size_image.width - 1))
+    y0 = max(0, min(y0, full_size_image.height - 1))
+    x1 = max(0, min(x1, full_size_image.width - 1))
+    y1 = max(0, min(y1, full_size_image.height - 1))
+    # Split the selected segments along the drawn line with split_type
+    split_selected_segments_along_line(x0, y0, x1, y1, split_type.get())
+
+def split_segments(direction):
+    assert direction in ("horizontal", "vertical"), "Direction must be 'horizontal' or 'vertical'"
+    global full_size_image, split_type
+
+    # Determine the split line based on direction
+    width, height = full_size_image.size
+    if direction == "horizontal":
+        # For "Split Horizontal", use a vertical line at x = width // 2
+        x0, y0 = width // 2, 0
+        x1, y1 = width // 2, height
+    else:  # "vertical"
+        # For "Split Vertical", use a horizontal line at y = height // 2
+        x0, y0 = 0, height // 2
+        x1, y1 = width, height // 2
+
+    # Call the updated split_selected_segments_along_line() with the determined line
+    split_selected_segments_along_line(x0, y0, x1, y1, split_type.get())
 
 # Download the ONNX model files if they don't exist
 def download_file(file_url_base, file_name):
@@ -328,7 +335,6 @@ def process_image(file_path):
     instruction_label.config(text="Click in the image to define segments.")
     root.config(cursor="arrow")
     clear_segment_list()
-
 
 # Post-process the mask to select the primary component, fill holes, remove noise, etc.
 def post_process_mask(mask, input_x, input_y, apply_median=True):
@@ -549,10 +555,21 @@ def redo(event=None):
         overlay_image()
         update_segment_list()
 
+# Filter out nonvalid dpi values
+def get_valid_dpi():
+    dpi_str = dpi_var.get()
+    try:
+        dpi = float(dpi_str)
+        if dpi <= 0:
+            dpi = default_dpi  # Use default DPI if input is zero or negative
+    except ValueError:
+        dpi = default_dpi  # Use default DPI if input is not a number
+    return dpi
+
 # Update the image size display
 def update_image_size_display(*args):
     if full_size_image is not None:
-        dpi = float(dpi_var.get())
+        dpi = get_valid_dpi()
         orig_width, orig_height = full_size_image.size
         width_in_inches = orig_width / dpi
         height_in_inches = orig_height / dpi
@@ -584,7 +601,7 @@ def on_segment_label_click(event, index):
 def update_segment_list():
     global selected_segments
     clear_segment_list()
-    dpi = float(dpi_var.get())
+    dpi = get_valid_dpi()
     for index, mask in enumerate(segment_masks):
         mask_resized = Image.fromarray(mask).resize(full_size_image.size, Image.Resampling.NEAREST)
         bbox = mask_resized.getbbox()
@@ -728,80 +745,6 @@ def on_manual_split_release(event):
         perform_manual_split(manual_split_start, manual_split_end)
         cancel_manual_split()  # Exit manual split mode
 
-def perform_manual_split(start_point, end_point):
-    # Convert points to full image coordinates
-    x0 = int(start_point[0] * scaling_factor)
-    y0 = int(start_point[1] * scaling_factor)
-    x1 = int(end_point[0] * scaling_factor)
-    y1 = int(end_point[1] * scaling_factor)
-    # Ensure coordinates are within image bounds
-    x0 = max(0, min(x0, full_size_image.width - 1))
-    y0 = max(0, min(y0, full_size_image.height - 1))
-    x1 = max(0, min(x1, full_size_image.width - 1))
-    y1 = max(0, min(y1, full_size_image.height - 1))
-    # Split the selected segments along the drawn line
-    split_selected_segments_along_line(x0, y0, x1, y1)
-
-def split_selected_segments_along_line(x0, y0, x1, y1):
-    global segment_masks, selection_points, selected_segments
-    push_state()  # Save the current state for undo functionality
-    segments_to_delete = []
-    new_segments_count = 0
-
-    # Create the split mask based on the drawn line
-    width, height = full_size_image.size
-    split_mask = create_split_mask_along_line(width, height, x0, y0, x1, y1)
-
-    # Iterate over selected segments to apply the split
-    for index in sorted(selected_segments, reverse=True):
-        mask = segment_masks[index]
-        new_masks = []
-        new_points = []
-
-        # Split the mask into two halves using the split mask
-        halves = [mask & split_mask, mask & (~split_mask)]
-        for half in halves:
-            if half.any():
-                # Find contours in the split half
-                contours, _ = cv2.findContours(half, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-                for contour in contours:
-                    M = cv2.moments(contour)
-                    if M['m00'] == 0:
-                        continue
-                    # Calculate the centroid for the new segment
-                    cx = int(M['m10'] / M['m00'])
-                    cy = int(M['m01'] / M['m00'])
-                    new_points.append((cx, cy))
-                    # Create a new mask for the segment
-                    new_mask = np.zeros_like(mask)
-                    cv2.drawContours(new_mask, [contour], -1, 255, thickness=cv2.FILLED)
-                    new_masks.append(new_mask)
-                    new_segments_count += 1
-
-        segments_to_delete.append(index)
-        segment_masks.extend(new_masks)
-        selection_points.extend(new_points)
-
-    # Delete the original segments that were split
-    delete_selected_segments(segments_to_delete, undoable=False)
-
-    # Update selected segments to the newly created ones
-    start_index = len(segment_masks) - new_segments_count
-    selected_segments = list(range(start_index, len(segment_masks)))
-
-    # Refresh the display
-    overlay_image()
-    update_segment_list()
-
-def create_split_mask_along_line(width, height, x0, y0, x1, y1):
-    # Create a coordinate grid
-    X, Y = np.meshgrid(np.arange(width), np.arange(height))
-    # Calculate determinant to determine the side of the line
-    det = (x1 - x0) * (Y - y0) - (y1 - y0) * (X - x0)
-    split_mask = det > 0  # Points on one side of the line
-    split_mask = split_mask.astype(np.uint8) * 255
-    return split_mask
-
 def create_menus():
     menu_bar = tk.Menu(root)
     root.config(menu=menu_bar)
@@ -903,8 +846,6 @@ alt_down = False
 shift_down = False
 state_stack = []
 redo_stack = []
-horizontal_split_points = []
-vertical_split_points = []
 manual_split_mode = False
 manual_split_start = None
 manual_split_end = None
