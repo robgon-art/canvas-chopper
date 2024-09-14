@@ -642,15 +642,35 @@ def save_image_segments():
 
     # Save each segment as an image
     for index, mask in enumerate(segment_masks):
-        segment_image = Image.new("RGBA", full_size_image.size)
+        # Find the bounding box of the mask
+        non_zero_indices = np.argwhere(mask)
+        if non_zero_indices.size == 0:
+            continue  # Skip empty masks
+
+        ymin, xmin = non_zero_indices.min(axis=0)
+        ymax, xmax = non_zero_indices.max(axis=0)
+
+        # Adjust xmax and ymax for slicing
+        xmax += 1
+        ymax += 1
+
+        width = xmax - xmin
+        height = ymax - ymin
+
+        # Create a new image for the segment
+        segment_image = Image.new("RGBA", (width, height))
         pixels = segment_image.load()
-        for y in range(mask.shape[0]):
-            for x in range(mask.shape[1]):
+
+        # Iterate over the bounding box
+        for y in range(ymin, ymax):
+            for x in range(xmin, xmax):
                 if mask[y, x]:
                     r, g, b = full_size_image.getpixel((x, y))
-                    pixels[x, y] = (r, g, b, int(mask[y, x] * 255))
+                    pixels[x - xmin, y - ymin] = (r, g, b, int(mask[y, x] * 255))
 
-        segment_file_path = os.path.join(full_dir_name, f"segment_{index + 1:02}.png")
+        # Prepare the filename with X and Y origin
+        segment_file_name = f"segment_{index + 1:02}_{xmin:04}_{ymin:04}.png"
+        segment_file_path = os.path.join(full_dir_name, segment_file_name)
         segment_image.save(segment_file_path)
 
 # Track alt key press and release
