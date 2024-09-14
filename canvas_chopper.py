@@ -802,6 +802,10 @@ load_button.pack(side='left', padx=5, pady=5, anchor='nw')
 instruction_label = tk.Label(root, text="Load a jpeg, png, bmp, or gif file.", anchor='w', bg=root.cget("bg"))
 instruction_label.pack(side='left', padx=5, pady=8, anchor='nw')
 
+# Bind the Return and Escape keys to release focus
+def release_focus(event):
+    root.focus_set()
+
 # Define the DPI label and entry
 dpi_label = tk.Label(root, text="DPI:", anchor='w')
 dpi_label.pack(side='left', padx=0, pady=8, anchor='nw')
@@ -809,6 +813,9 @@ dpi_var = tk.StringVar(value=str(default_dpi))
 dpi_entry = tk.Entry(root, textvariable=dpi_var, width=4)
 dpi_entry.pack(side='left', padx=0, pady=8, anchor='nw')
 dpi_var.trace_add("write", update_image_size_display)
+dpi_entry.bind("<Return>", release_focus)
+dpi_entry.bind("<Escape>", release_focus)
+dpi_entry.bind("<Tab>", release_focus)
 
 # Define size display label
 size_display_var = tk.StringVar(value="Image Size: N/A")
