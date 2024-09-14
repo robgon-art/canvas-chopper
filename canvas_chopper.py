@@ -683,6 +683,125 @@ def exit_application():
     # Function to cleanly exit the application
     root.destroy()  # Closes the Tkinter window and ends the program
 
+def start_manual_split():
+    global manual_split_mode
+    manual_split_mode = True
+    image_label.config(cursor="crosshair")
+    instruction_label.config(text="Click and drag to define split line. Press Esc to cancel.")
+    # Unbind the original image click event
+    image_label.unbind("<Button-1>")
+    # Bind mouse events for manual split
+    image_label.bind("<ButtonPress-1>", on_manual_split_press)
+    image_label.bind("<ButtonRelease-1>", on_manual_split_release)
+    # Bind Escape key to cancel manual split
+    root.bind("<Escape>", cancel_manual_split)
+
+def cancel_manual_split(event=None):
+    global manual_split_mode
+    manual_split_mode = False
+    image_label.config(cursor="arrow")
+    instruction_label.config(text="")
+    # Unbind mouse events related to manual split
+    image_label.unbind("<ButtonPress-1>")
+    image_label.unbind("<B1-Motion>")
+    image_label.unbind("<ButtonRelease-1>")
+    root.unbind("<Escape>")
+    # Rebind the original image click event
+    image_label.bind("<Button-1>", on_image_click)
+    overlay_image()  # Refresh the image to remove any temporary lines
+
+def on_manual_split_press(event):
+    global manual_split_start
+    manual_split_start = (event.x, event.y)
+    overlay_image()  # Clear any previous overlays
+
+def on_manual_split_release(event):
+    global manual_split_start, manual_split_end
+    manual_split_end = (event.x, event.y)
+    # Check if there was a drag (i.e., if the start and end points are different)
+    if manual_split_start == manual_split_end:
+        # No drag detected, exit manual split mode
+        cancel_manual_split()
+        return
+    else:
+        # Perform the split operation
+        perform_manual_split(manual_split_start, manual_split_end)
+        cancel_manual_split()  # Exit manual split mode
+
+def perform_manual_split(start_point, end_point):
+    # Convert points to full image coordinates
+    x0 = int(start_point[0] * scaling_factor)
+    y0 = int(start_point[1] * scaling_factor)
+    x1 = int(end_point[0] * scaling_factor)
+    y1 = int(end_point[1] * scaling_factor)
+    # Ensure coordinates are within image bounds
+    x0 = max(0, min(x0, full_size_image.width - 1))
+    y0 = max(0, min(y0, full_size_image.height - 1))
+    x1 = max(0, min(x1, full_size_image.width - 1))
+    y1 = max(0, min(y1, full_size_image.height - 1))
+    # Split the selected segments along the drawn line
+    split_selected_segments_along_line(x0, y0, x1, y1)
+
+def split_selected_segments_along_line(x0, y0, x1, y1):
+    global segment_masks, selection_points, selected_segments
+    push_state()  # Save the current state for undo functionality
+    segments_to_delete = []
+    new_segments_count = 0
+
+    # Create the split mask based on the drawn line
+    width, height = full_size_image.size
+    split_mask = create_split_mask_along_line(width, height, x0, y0, x1, y1)
+
+    # Iterate over selected segments to apply the split
+    for index in sorted(selected_segments, reverse=True):
+        mask = segment_masks[index]
+        new_masks = []
+        new_points = []
+
+        # Split the mask into two halves using the split mask
+        halves = [mask & split_mask, mask & (~split_mask)]
+        for half in halves:
+            if half.any():
+                # Find contours in the split half
+                contours, _ = cv2.findContours(half, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                for contour in contours:
+                    M = cv2.moments(contour)
+                    if M['m00'] == 0:
+                        continue
+                    # Calculate the centroid for the new segment
+                    cx = int(M['m10'] / M['m00'])
+                    cy = int(M['m01'] / M['m00'])
+                    new_points.append((cx, cy))
+                    # Create a new mask for the segment
+                    new_mask = np.zeros_like(mask)
+                    cv2.drawContours(new_mask, [contour], -1, 255, thickness=cv2.FILLED)
+                    new_masks.append(new_mask)
+                    new_segments_count += 1
+
+        segments_to_delete.append(index)
+        segment_masks.extend(new_masks)
+        selection_points.extend(new_points)
+
+    # Delete the original segments that were split
+    delete_selected_segments(segments_to_delete, undoable=False)
+
+    # Update selected segments to the newly created ones
+    start_index = len(segment_masks) - new_segments_count
+    selected_segments = list(range(start_index, len(segment_masks)))
+
+    # Refresh the display
+    overlay_image()
+    update_segment_list()
+
+def create_split_mask_along_line(width, height, x0, y0, x1, y1):
+    # Create a coordinate grid
+    X, Y = np.meshgrid(np.arange(width), np.arange(height))
+    # Calculate determinant to determine the side of the line
+    det = (x1 - x0) * (Y - y0) - (y1 - y0) * (X - x0)
+    split_mask = det > 0  # Points on one side of the line
+    split_mask = split_mask.astype(np.uint8) * 255
+    return split_mask
+
 def create_menus():
     menu_bar = tk.Menu(root)
     root.config(menu=menu_bar)
@@ -710,6 +829,7 @@ def create_menus():
     edit_menu.add_separator()
     edit_menu.add_command(label="Split Horizontal", accelerator="Ctrl+H", command=lambda: split_segments("horizontal"))
     edit_menu.add_command(label="Split Vertical", accelerator="Ctrl+V", command=lambda: split_segments("vertical"))
+    edit_menu.add_command(label="Manual Split", accelerator="Ctrl+M", command=start_manual_split)
     split_type_menu = tk.Menu(edit_menu, tearoff=0)
     edit_menu.add_cascade(label="Split Type", menu=split_type_menu)
     edit_menu.add_separator()
@@ -754,6 +874,7 @@ def create_menus():
     root.bind("<Control-j>", lambda event: join_selected_segments())
     root.bind("<Control-h>", lambda event: split_segments("horizontal"))
     root.bind("<Control-v>", lambda event: split_segments("vertical"))
+    root.bind("<Control-m>", lambda event: start_manual_split())
     root.bind("<Control-x>", lambda event: delete_selected_segments(selected_segments))
     root.bind("<Delete>", lambda event: delete_selected_segments(selected_segments))
     root.bind("+", lambda event: morphological_filter(1))
@@ -784,6 +905,9 @@ state_stack = []
 redo_stack = []
 horizontal_split_points = []
 vertical_split_points = []
+manual_split_mode = False
+manual_split_start = None
+manual_split_end = None
 
 # Main GUI
 root = tk.Tk()
